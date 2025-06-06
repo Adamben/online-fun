@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>Food Fight Live – Multiplayer & Chat</title>
+  <title>Food Fight Live – Custom Peer ID with Chat Cooldown</title>
   <!-- Peer.js library -->
   <script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <style>
@@ -27,7 +27,7 @@
       box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     }
 
-    #container {
+    .section {
       margin-top: 20px;
       width: 360px;
       background: #fff3e0;
@@ -37,12 +37,12 @@
       box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.2);
     }
 
-    #container div {
+    .section div {
       margin-bottom: 12px;
       font-size: 1rem;
     }
 
-    #host-id-input {
+    input[type="text"] {
       width: calc(100% - 16px);
       padding: 6px;
       border: 1px solid #ffab91;
@@ -139,11 +139,19 @@
   </style>
 </head>
 <body>
-  <header>🍲 Food Fight Live – Multiplayer & Chat 🍲</header>
+  <header>🍲 Food Fight Live – Custom Peer ID with Chat Cooldown 🍲</header>
 
-  <div id="container">
+  <!-- SECTION: Custom ID Input -->
+  <div id="idSection" class="section">
+    <div>Choose a short Peer ID (no spaces, letters/numbers only):</div>
+    <input type="text" id="custom-id-input" placeholder="e.g., food123" maxlength="10" />
+    <button id="set-id-btn">Set My ID</button>
+  </div>
+
+  <!-- SECTION: Main Controls (hidden until ID set) -->
+  <div id="mainSection" class="section" style="display: none;">
     <div>Your Peer ID: <span id="my-id">...</span></div>
-    <div>Role: <span id="role">Connecting...</span></div>
+    <div>Role: <span id="role">—</span></div>
 
     <div id="joinSection">
       <label for="host-id-input">Enter Host’s Peer ID to join:</label><br/>
@@ -159,7 +167,7 @@
     </div>
   </div>
 
-  <!-- Chat area -->
+  <!-- SECTION: Chat (hidden until after role is determined) -->
   <div id="chatContainer" style="display: none;">
     <div id="chatLog"></div>
     <div id="chatInput">
@@ -168,23 +176,19 @@
     </div>
   </div>
 
-  <!-- Video area -->
+  <!-- SECTION: Video (hidden until after role is determined) -->
   <div id="videoContainer" style="display: none;">
     <video id="localVideo" autoplay muted></video>
     <div id="remotes"></div>
   </div>
 
   <script>
-    // ─────────── Peer.js & WebRTC SETUP ───────────
+    let peer, isHost = false, connections = {}, mediaConnections = {}, clientConn = null, localStream = null;
+    let lastSentTime = 0; // Timestamp of last sent chat message
 
-    const peer = new Peer(); // Default PeerServer
-    let isHost = false;
-    const connections = {};    // Data connections from host to clients
-    const mediaConnections = {}; // Media calls (PeerJS Call objects)
-    let clientConn = null;     // For client: connection to host
-    let localStream = null;
-
-    // UI Elements
+    // UI references
+    const idSection = document.getElementById('idSection');
+    const mainSection = document.getElementById('mainSection');
     const myIdSpan = document.getElementById('my-id');
     const roleSpan = document.getElementById('role');
     const joinSection = document.getElementById('joinSection');
@@ -201,72 +205,75 @@
     const localVideo = document.getElementById('localVideo');
     const remotesDiv = document.getElementById('remotes');
 
-    // ─────────── GET MEDIA STREAM ───────────
+    // ─────────── SET CUSTOM ID ───────────
 
-    async function openUserMedia() {
-      try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localVideo.srcObject = localStream;
-      } catch (err) {
-        console.error('Failed to get media:', err);
-        alert('Cannot access webcam/mic. Video chat unavailable.');
+    document.getElementById('set-id-btn').onclick = () => {
+      const chosenId = document.getElementById('custom-id-input').value.trim();
+      if (!/^[a-zA-Z0-9]+$/.test(chosenId)) {
+        alert('ID must be letters and numbers only (no spaces).');
+        return;
       }
-    }
+      initializePeer(chosenId);
+      idSection.style.display = 'none';
+      mainSection.style.display = 'block';
+    };
 
-    // ─────────── PEER EVENTS ───────────
+    // ─────────── INITIALIZE PEER.JS WITH CUSTOM ID ───────────
 
-    peer.on('open', id => {
-      myIdSpan.textContent = id;
-      // Default to host until they join another
-      isHost = true;
-      roleSpan.textContent = 'Host';
-      peerCountSection.style.display = 'block';
-      startSection.style.display = 'block';
-      updatePeerCount();
-      openUserMedia().then(() => {
-        videoContainer.style.display = 'flex';
-      });
-    });
+    function initializePeer(myId) {
+      peer = new Peer(myId);
 
-    // Handle incoming data connection (host receiving client)
-    peer.on('connection', conn => {
-      isHost = true;
-      roleSpan.textContent = 'Host';
-      joinSection.style.display = 'none';
-      peerCountSection.style.display = 'block';
-      startSection.style.display = 'block';
-
-      connections[conn.peer] = conn;
-      updatePeerCount();
-
-      // Listen for chat from clients
-      conn.on('data', data => {
-        if (data.type === 'chat') {
-          appendChatMessage(data.from, data.message);
-          // Broadcast to other peers
-          if (isHost) broadcastChat(data.from, data.message);
-        }
-      });
-
-      conn.on('close', () => {
-        delete connections[conn.peer];
+      peer.on('open', id => {
+        myIdSpan.textContent = id;
+        // Assume host until joining another
+        isHost = true;
+        roleSpan.textContent = 'Host';
+        peerCountSection.style.display = 'block';
+        startSection.style.display = 'block';
         updatePeerCount();
-        removeRemoteVideo(conn.peer);
+        openUserMedia().then(() => {
+          videoContainer.style.display = 'flex';
+        });
+        chatContainer.style.display = 'flex';
       });
 
-      // When a new client connects, host calls them with local stream
-      const call = peer.call(conn.peer, localStream);
-      mediaConnections[conn.peer] = call;
-      setupCallHandlers(call);
-    });
+      // Incoming data connection (host receives from client)
+      peer.on('connection', conn => {
+        isHost = true;
+        roleSpan.textContent = 'Host';
+        joinSection.style.display = 'none';
+        peerCountSection.style.display = 'block';
+        startSection.style.display = 'block';
 
-    // Handle incoming media call (someone calling you)
-    peer.on('call', call => {
-      // Answer with our local stream
-      call.answer(localStream);
-      mediaConnections[call.peer] = call;
-      setupCallHandlers(call);
-    });
+        connections[conn.peer] = conn;
+        updatePeerCount();
+
+        conn.on('data', data => {
+          if (data.type === 'chat') {
+            appendChatMessage(data.from, data.message);
+            if (isHost) broadcastChat(data.from, data.message);
+          }
+        });
+
+        conn.on('close', () => {
+          delete connections[conn.peer];
+          updatePeerCount();
+          removeRemoteVideo(conn.peer);
+        });
+
+        // Host calls new client
+        const call = peer.call(conn.peer, localStream);
+        mediaConnections[conn.peer] = call;
+        setupCallHandlers(call);
+      });
+
+      // Incoming media call (somebody calls you)
+      peer.on('call', call => {
+        call.answer(localStream);
+        mediaConnections[call.peer] = call;
+        setupCallHandlers(call);
+      });
+    }
 
     // ─────────── JOIN HOST ───────────
 
@@ -283,23 +290,19 @@
         peerCountSection.style.display = 'none';
         startSection.style.display = 'none';
 
-        // Show chat and video for client
         chatContainer.style.display = 'flex';
         videoContainer.style.display = 'flex';
         openUserMedia().then(() => {
-          // Once media is open, call the host to send our stream
           const call = peer.call(hostId, localStream);
           mediaConnections[hostId] = call;
           setupCallHandlers(call);
         });
       });
 
-      // Listen for chat and notifications from host
       clientConn.on('data', data => {
         if (data.type === 'chat') {
           appendChatMessage(data.from, data.message);
         } else if (data.type === 'peer-count') {
-          // host broadcasts updated count
           peerCountSpan.textContent = data.count;
         } else if (data.type === 'start') {
           appendSystemMessage('Host has started the game!');
@@ -314,9 +317,8 @@
     // ─────────── HOST: UPDATE PEER COUNT ───────────
 
     function updatePeerCount() {
-      const count = Object.keys(connections).length + 1; // include host
+      const count = Object.keys(connections).length + 1;
       peerCountSpan.textContent = count;
-      // If host, broadcast new count to all clients
       Object.values(connections).forEach(conn => {
         if (conn.open) {
           conn.send({ type: 'peer-count', count });
@@ -327,17 +329,16 @@
     // ─────────── HOST: START GAME ───────────
 
     document.getElementById('start-btn').onclick = () => {
-      // Notify all clients that the game is starting
       Object.values(connections).forEach(conn => {
         if (conn.open) {
           conn.send({ type: 'start' });
         }
       });
       appendSystemMessage('You (Host) started the game!');
-      // Additional game-logic can go here
+      // Insert game-start logic here
     };
 
-    // ─────────── CHAT FUNCTIONALITY ───────────
+    // ─────────── CHAT FUNCTIONALITY WITH COOLDOWN ───────────
 
     sendChatBtn.onclick = sendChat;
     chatText.addEventListener('keypress', e => {
@@ -345,16 +346,31 @@
     });
 
     function sendChat() {
-      const message = chatText.value.trim();
-      if (!message) return;
+      const rawMessage = chatText.value;
+      const message = rawMessage.trim();
+      const now = Date.now();
+
+      // No empty/whitespace-only messages
+      if (!message) {
+        chatText.value = '';
+        return;
+      }
+      // Enforce 0.75s cooldown between sends
+      if (now - lastSentTime < 750) {
+        // Optionally show a quick system message or just ignore
+        appendSystemMessage('Please wait before sending another message.');
+        return;
+      }
+
+      lastSentTime = now;
       const fromId = peer.id;
       appendChatMessage('You', message);
 
       if (isHost) {
-        // Host broadcast directly
+        // Host: broadcast to all clients
         broadcastChat('Host', message);
       } else {
-        // Client send to host
+        // Client: send to host, who will rebroadcast
         clientConn.send({ type: 'chat', from: fromId, message });
       }
 
@@ -388,8 +404,17 @@
 
     // ─────────── VIDEO/CALL HANDLERS ───────────
 
+    async function openUserMedia() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localVideo.srcObject = localStream;
+      } catch (err) {
+        console.error('Failed to get media:', err);
+        alert('Cannot access webcam/mic. Video chat unavailable.');
+      }
+    }
+
     function setupCallHandlers(call) {
-      // When receiving remote stream
       call.on('stream', remoteStream => {
         if (!document.getElementById(`vid-${call.peer}`)) {
           addRemoteVideo(call.peer, remoteStream);
