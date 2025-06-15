@@ -1,101 +1,173 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>2D Multiplayer Shooter w/ Voice Chat</title>
+  <meta charset="UTF-8">
+  <title>2D Shooter w/ Full Sync, Touch & Sound</title>
   <style>
-    html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; }
+    html,body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; touch-action:none; }
     canvas { display:block; background:#222; }
-    #startOverlay, #endOverlay {
+    /* Overlays */
+    #startOverlay,#endOverlay {
       position:absolute; top:0; left:0; right:0; bottom:0;
-      background:rgba(0,0,0,0.8);
+      background:rgba(0,0,0,0.8); color:white;
       display:flex; flex-direction:column; align-items:center; justify-content:center;
-      color:white; z-index:100;
+      z-index:100;
     }
-    #startOverlay input, #startOverlay button,
-    #endOverlay button { padding:8px; margin:4px; font-size:16px; }
-    #scope {
-      position:absolute; top:50%; left:50%;
-      width:200px; height:200px; margin:-100px 0 0 -100px;
-      border:4px solid rgba(255,255,255,0.7); border-radius:50%;
-      pointer-events:none; display:none; z-index:5;
+    #endOverlay { display:none; }
+    #startOverlay input,#startOverlay button,#endOverlay button {
+      margin:4px; padding:8px; font-size:16px;
     }
-    #ui {
-      position:absolute; top:10px; left:10px; z-index:5; color:white;
-    }
+    /* HUD */
+    #ui { position:absolute; top:10px; left:10px; color:white; z-index:5; }
     #ui div { margin-bottom:4px; }
+    /* Voice toggle */
     #peerControls {
       position:absolute; bottom:10px; left:10px; z-index:5;
-      color:white; background:rgba(0,0,0,0.5); padding:8px; border-radius:4px;
+      background:rgba(0,0,0,0.5); padding:8px; border-radius:4px; color:white;
     }
-    #peerControls input { width:100px; margin-right:4px; }
+    /* Joysticks */
+    .stick-area {
+      position:absolute; width:150px; height:150px;
+      background:rgba(255,255,255,0.1); border-radius:50%;
+      display:flex; align-items:center; justify-content:center;
+      touch-action:none; z-index:10;
+    }
+    #leftStick  { bottom:20px; left:20px; }
+    #rightStick { bottom:20px; right:20px; }
+    .knob {
+      width:60px; height:60px;
+      background:rgba(255,255,255,0.3); border-radius:50%;
+      transform:translate(-30px,-30px); touch-action:none;
+    }
   </style>
 </head>
 <body>
   <canvas id="game"></canvas>
 
-  <!-- Start -->
+  <!-- Start / End Overlays -->
   <div id="startOverlay">
     <h1>2D Shooter</h1>
     <div>
-      <label>Your ID: <input id="myId" placeholder="peer-id"></label>
+      <label>Your ID: <input id="myId" placeholder="peer‑id"></label>
       <button id="initPeer">Init</button>
     </div>
     <div>
-      <label>Connect to: <input id="otherId" placeholder="peer-id"></label>
+      <label>Connect to: <input id="otherId" placeholder="peer‑id"></label>
       <button id="connectPeer">Connect</button>
     </div>
     <button id="startGame">Start</button>
     <div id="connStatus"></div>
   </div>
-
-  <!-- End -->
-  <div id="endOverlay" style="display:none">
+  <div id="endOverlay">
     <h1 id="endMsg"></h1>
     <button id="rematch">Rematch</button>
   </div>
 
-  <!-- Scope -->
-  <div id="scope"></div>
-
-  <!-- HUD -->
+  <!-- HUD & Voice -->
   <div id="ui">
     <div>You: <progress id="myHealth" value="5" max="5"></progress></div>
     <div>Enemy: <progress id="otherHealth" value="5" max="5"></progress></div>
   </div>
-
-  <!-- Peer Controls / Voice -->
   <div id="peerControls">
     <label><input type="checkbox" id="voiceToggle"> Voice Chat</label>
   </div>
 
+  <!-- Touch Joysticks -->
+  <div id="leftStick" class="stick-area"><div id="lKnob" class="knob"></div></div>
+  <div id="rightStick" class="stick-area"><div id="rKnob" class="knob"></div></div>
+
+  <!-- PeerJS -->
   <script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <script>
-  // Canvas
+  // —— Setup & State ——
   const canvas = document.getElementById('game'), ctx = canvas.getContext('2d');
-  function resize(){ canvas.width = innerWidth; canvas.height = innerHeight; }
+  function resize(){ canvas.width=innerWidth; canvas.height=innerHeight; }
   window.addEventListener('resize', resize); resize();
 
-  // Game state
   const size = 40;
-  let me = { x: size, y: canvas.height/2, angle:0, alive:true, color:'#4af', health:5, dabTime:0 };
-  let other = { x: canvas.width - size, y: canvas.height/2, angle:0, alive:true, color:'#fa4', health:5, dabTime:0 };
+  let frameCount = 0;
+  let me =    { x:size, y:canvas.height/2, angle:0, alive:true, health:5, dabTime:0 };
+  let other = { x:canvas.width-size, y:canvas.height/2, angle:0, alive:true, health:5, dabTime:0 };
   let bullets = [], debris = [];
 
-  // Controls
-  const keys = {};
-  window.addEventListener('keydown', e=> keys[e.code]=true);
-  window.addEventListener('keyup',   e=> keys[e.code]=false);
-  let mouse = { x:0, y:0 };
-  canvas.addEventListener('mousemove', e=>{
-    const r = canvas.getBoundingClientRect();
-    mouse.x = e.clientX - r.left;
-    mouse.y = e.clientY - r.top;
-    me.angle = Math.atan2(mouse.y - me.y, mouse.x - me.x);
-  });
-  canvas.addEventListener('mousedown', () => shoot());
+  const myCols    = ['#4af','#6cf'],
+        otherCols = ['#fa4','#fc6'];
 
-  // Shoot
+  // —— Joysticks ——
+  const leftArea  = document.getElementById('leftStick'),
+        lKnob     = document.getElementById('lKnob'),
+        rightArea = document.getElementById('rightStick'),
+        rKnob     = document.getElementById('rKnob');
+  const maxR = 60;
+  let leftStick = { x:0,y:0 }, rightStick = { x:0,y:0 };
+
+  function handleStick(t,tg,knob,out){
+    const r=tg.getBoundingClientRect(),
+          cx=r.left + r.width/2, cy=r.top + r.height/2,
+          dx=t.clientX-cx, dy=t.clientY-cy,
+          dist=Math.hypot(dx,dy), ang=Math.atan2(dy,dx),
+          rad=Math.min(dist,maxR);
+    knob.style.transform = `translate(${Math.cos(ang)*rad-30}px,${Math.sin(ang)*rad-30}px)`;
+    out.x = Math.cos(ang)*(rad/maxR);
+    out.y = Math.sin(ang)*(rad/maxR);
+  }
+  function resetStick(knob,out){
+    knob.style.transform = 'translate(-30px,-30px)';
+    out.x = out.y = 0;
+  }
+
+  ['start','move'].forEach(e=>{
+    leftArea.addEventListener('touch'+e,ev=>{
+      ev.preventDefault();
+      handleStick(ev.touches[0], leftArea, lKnob, leftStick);
+    });
+  });
+  ['end','cancel'].forEach(e=>{
+    leftArea.addEventListener('touch'+e, ()=> resetStick(lKnob,leftStick));
+  });
+
+  rightArea.addEventListener('touchstart',e=>e.preventDefault());
+  rightArea.addEventListener('touchmove',ev=>{
+    handleStick(ev.touches[0], rightArea, rKnob, rightStick);
+    me.angle = Math.atan2(rightStick.y, rightStick.x);
+  });
+  ['end','cancel'].forEach(e=>{
+    rightArea.addEventListener('touch'+e,ev=>{
+      if(Math.hypot(rightStick.x,rightStick.y)>0.2) shoot();
+      resetStick(rKnob,rightStick);
+    });
+  });
+
+  // —— Tap-to-Shoot ——
+  document.addEventListener('touchstart',ev=>{
+    const t = ev.touches[0];
+    if(t.clientY > canvas.height * .75){
+      const L = leftArea.getBoundingClientRect(),
+            R = rightArea.getBoundingClientRect();
+      const inL = t.clientX>=L.left && t.clientX<=L.right && t.clientY>=L.top && t.clientY<=L.bottom;
+      const inR = t.clientX>=R.left && t.clientX<=R.right && t.clientY>=R.top && t.clientY<=R.bottom;
+      if(!inL && !inR){
+        me.angle = Math.atan2(t.clientY - me.y, t.clientX - me.x);
+        shoot();
+      }
+    }
+  });
+
+  // —— Audio Beeps ——
+  const audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  function playBeep(freq, duration=0.1){
+    const osc = audioCtx.createOscillator(),
+          gain = audioCtx.createGain();
+    osc.frequency.value = freq;
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    gain.gain.setValueAtTime(1, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.stop(audioCtx.currentTime + duration);
+  }
+
+  // —— Shooting & Damage ——
   function shoot(){
     if(!me.alive) return;
     bullets.push({
@@ -103,80 +175,68 @@
       y: me.y + Math.sin(me.angle)*size/2,
       vx: Math.cos(me.angle)*8,
       vy: Math.sin(me.angle)*8,
-      owner: 'me'
+      owner:'me'
     });
-    doDab(true);
+    dab(me);
+    playBeep(600,0.05);
     send({ shoot:true });
   }
-
-  // Dab tilt
-  function doDab(isLocal){
-    const p = isLocal? me: other;
-    p.dabTime = 20;
-  }
-
-  // Explosion
-  function explode(x,y,color){
+  function dab(p){ p.dabTime = 20; }
+  function explode(x,y){
     for(let i=0;i<12;i++){
       debris.push({
         x,y,
         vx:(Math.random()*2-1)*5,
         vy:(Math.random()*2-1)*5,
-        life:60,
-        color
+        life:60
       });
     }
   }
-
-  // Death handlers
   function meDie(){
     me.alive = false;
-    explode(me.x, me.y, me.color);
+    explode(me.x, me.y);
     send({ die:true });
     showEnd('You Lose');
   }
   function otherDie(){
     other.alive = false;
-    explode(other.x, other.y, other.color);
+    explode(other.x, other.y);
     showEnd('You Win');
   }
 
-  // Health UI
+  // —— Health Sync ——
   const myHP = document.getElementById('myHealth'),
         oHP  = document.getElementById('otherHealth');
   function updateHP(){
     myHP.value = me.health;
     oHP.value  = other.health;
   }
+  function takeDamage(){
+    me.health = Math.max(0, me.health - 1);
+    playBeep(200,0.1);
+    updateHP();
+    send({ health: me.health });
+    if(me.health <= 0) meDie();
+  }
 
-  // Process bullets
+  // —— Bullet Logic ——
   function processBullets(){
     bullets = bullets.filter(b=>{
       b.x += b.vx; b.y += b.vy;
-      // collision
-      if(b.owner==='me' && other.alive){
-        if(Math.hypot(b.x-other.x,b.y-other.y) < size){
-          other.health--;
-          updateHP();
-          send({ hit:true });
-          if(other.health<=0) otherDie();
-          return false;
-        }
+      if(b.owner==='me' && other.alive && Math.hypot(b.x-other.x,b.y-other.y) < size){
+        // only dab the other for visual feedback
+        dab(other);
+        return false;
       }
-      if(b.owner==='other' && me.alive){
-        if(Math.hypot(b.x-me.x,b.y-me.y) < size){
-          me.health--;
-          updateHP();
-          if(me.health<=0) meDie();
-          return false;
-        }
+      if(b.owner==='other' && me.alive && Math.hypot(b.x-me.x,b.y-me.y) < size){
+        takeDamage();
+        return false;
       }
-      // bounds
       return b.x>=0 && b.x<=canvas.width && b.y>=0 && b.y<=canvas.height;
     });
   }
 
-  // Networking & Voice
+  // —— Networking & Voice ——
   let peer, conn, localStream;
   const status = document.getElementById('connStatus');
 
@@ -184,52 +244,48 @@
     const id = document.getElementById('myId').value.trim();
     if(!id) return alert('Enter your peer ID');
     peer = new Peer(id);
-    peer.on('open', ()=> status.textContent = `Peer ready: ${id}`);
-    peer.on('connection', c=>{ conn=c; setupConn(); });
-    // prepare voice
+    peer.on('open',()=> status.textContent = `Ready: ${id}`);
+    peer.on('connection',c=>{ conn=c; setupConn(); });
     navigator.mediaDevices.getUserMedia({ audio:true }).then(s=> localStream = s);
   };
-
   document.getElementById('connectPeer').onclick = ()=>{
     if(!peer) return alert('Init first');
-    const otherId = document.getElementById('otherId').value.trim();
-    conn = peer.connect(otherId);
+    conn = peer.connect(document.getElementById('otherId').value.trim());
     setupConn();
   };
 
   function setupConn(){
-    conn.on('open', ()=>{
+    conn.on('open',()=>{
       status.textContent = 'Connected!';
-      // voice call
       if(localStream && document.getElementById('voiceToggle').checked){
         const call = peer.call(conn.peer, localStream);
         call.on('stream', playStream);
       }
     });
-    // answer incoming voice call
-    peer.on('call', c=>{
-      if(localStream) {
+    peer.on('call',c=>{
+      if(localStream){
         c.answer(localStream);
         c.on('stream', playStream);
       }
     });
     conn.on('data', d=>{
-      if(d.pos)    [other.x, other.y] = d.pos;
+      if(d.pos)      [other.x, other.y] = d.pos;
       if(d.angle!=null) other.angle = d.angle;
-      if(d.shoot)  bullets.push({
-                      x: other.x + Math.cos(other.angle)*size/2,
-                      y: other.y + Math.sin(other.angle)*size/2,
-                      vx: Math.cos(other.angle)*8,
-                      vy: Math.sin(other.angle)*8,
-                      owner: 'other'
-                    });
-      if(d.dab)    doDab(false);
-      if(d.hit){
-        other.health--;
-        updateHP();
-        if(other.health<=0) otherDie();
+      if(d.shoot){
+        bullets.push({
+          x: other.x + Math.cos(other.angle)*size/2,
+          y: other.y + Math.sin(other.angle)*size/2,
+          vx: Math.cos(other.angle)*8,
+          vy: Math.sin(other.angle)*8,
+          owner:'other'
+        });
       }
-      if(d.die)    otherDie();
+      if(d.health != null){
+        other.health = d.health;
+        updateHP();
+        if(other.health <= 0) otherDie();
+      }
+      if(d.die) otherDie();
     });
   }
 
@@ -241,94 +297,86 @@
   }
 
   function send(obj){
-    if(conn && conn.open) conn.send({
-      pos:[me.x, me.y],
-      angle:me.angle,
-      shoot:obj.shoot||false,
-      dab:obj.dab||false,
-      hit:obj.hit||false,
-      die:obj.die||false
-    });
+    if(conn && conn.open){
+      conn.send(Object.assign({
+        pos:    [me.x, me.y],
+        angle:  me.angle
+      }, obj));
+    }
   }
 
-  // Start / End
+  // —— Start / End UI ——
   document.getElementById('startGame').onclick = ()=>{
     document.getElementById('startOverlay').style.display = 'none';
   };
   const endOv = document.getElementById('endOverlay'),
-        endMsg = document.getElementById('endMsg');
+        endMsg= document.getElementById('endMsg');
   function showEnd(msg){
     endMsg.textContent = msg;
     endOv.style.display = 'flex';
   }
   document.getElementById('rematch').onclick = ()=>{
-    // reset state
-    me = { x: size, y: canvas.height/2, angle:0, alive:true, color:'#4af', health:5, dabTime:0 };
-    other = { x: canvas.width-size, y:canvas.height/2, angle:0, alive:true, color:'#fa4', health:5, dabTime:0 };
+    me =    { x:size, y:canvas.height/2, angle:0, alive:true, health:5, dabTime:0 };
+    other = { x:canvas.width-size, y:canvas.height/2, angle:0, alive:true, health:5, dabTime:0 };
     bullets = []; debris = [];
     updateHP();
     endOv.style.display = 'none';
+    send({ health: me.health });
   };
 
-  // Main loop
+  // —— Main Loop ——
   function loop(){
+    frameCount++;
     // movement
     if(me.alive){
-      if(keys['KeyW']) me.y -= 4;
-      if(keys['KeyS']) me.y += 4;
-      if(keys['KeyA']) me.x -= 4;
-      if(keys['KeyD']) me.x += 4;
+      const sp = 4;
+      me.x = Math.max(size/2, Math.min(canvas.width-size/2, me.x + leftStick.x*sp));
+      me.y = Math.max(size/2, Math.min(canvas.height-size/2, me.y + leftStick.y*sp));
     }
-
     processBullets();
-    send({}); // send position/angle
+    send({});  // broadcast pos & angle
+    debris = debris.filter(d=>{ d.x+=d.vx; d.y+=d.vy; return --d.life>0; });
 
-    // update debris
-    debris = debris.filter(d=>{
-      d.x += d.vx; d.y += d.vy; d.life--;
-      return d.life>0;
-    });
-
-    // draw
     ctx.clearRect(0,0,canvas.width,canvas.height);
+    const mc = myCols[Math.floor(frameCount/15)%2],
+          oc = otherCols[Math.floor(frameCount/15)%2];
 
-    // other
+    // draw other
     if(other.alive){
       ctx.save();
-      ctx.translate(other.x, other.y);
-      if(other.dabTime>0){ ctx.rotate(Math.PI/4); other.dabTime--; }
+      ctx.translate(other.x,other.y);
+      if(other.dabTime-->0) ctx.rotate(Math.PI/4);
       else ctx.rotate(other.angle);
-      ctx.fillStyle = other.color;
+      ctx.fillStyle = oc;
       ctx.fillRect(-size/2,-size/2,size,size);
       ctx.restore();
     }
-
-    // me
+    // draw me
     if(me.alive){
       ctx.save();
-      ctx.translate(me.x, me.y);
-      if(me.dabTime>0){ ctx.rotate(-Math.PI/4); me.dabTime--; }
+      ctx.translate(me.x,me.y);
+      if(me.dabTime-->0) ctx.rotate(-Math.PI/4);
       else ctx.rotate(me.angle);
-      ctx.fillStyle = me.color;
+      ctx.fillStyle = mc;
       ctx.fillRect(-size/2,-size/2,size,size);
       ctx.restore();
     }
-
     // bullets
     bullets.forEach(b=>{
       ctx.fillStyle = '#fff';
       ctx.beginPath(); ctx.arc(b.x,b.y,5,0,2*Math.PI); ctx.fill();
     });
-
     // debris
     debris.forEach(d=>{
-      ctx.fillStyle = d.color;
+      ctx.fillStyle = '#888';
       ctx.fillRect(d.x-4,d.y-4,8,8);
     });
 
     requestAnimationFrame(loop);
   }
-  updateHP(); loop();
+
+  updateHP();
+  loop();
   </script>
 </body>
 </html>
