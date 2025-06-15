@@ -1,459 +1,334 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Food Fight Live – Custom Peer ID with Chat Cooldown</title>
-  <!-- Peer.js library -->
-  <script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
+  <title>2D Multiplayer Shooter w/ Voice Chat</title>
   <style>
-    body {
-      background: #f9f3ee;
-      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-      margin: 0;
-      padding: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      min-height: 100vh;
+    html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; }
+    canvas { display:block; background:#222; }
+    #startOverlay, #endOverlay {
+      position:absolute; top:0; left:0; right:0; bottom:0;
+      background:rgba(0,0,0,0.8);
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      color:white; z-index:100;
     }
-
-    header {
-      background: #ff7043;
-      color: white;
-      width: 100%;
-      text-align: center;
-      padding: 12px;
-      font-size: 1.6rem;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    #startOverlay input, #startOverlay button,
+    #endOverlay button { padding:8px; margin:4px; font-size:16px; }
+    #scope {
+      position:absolute; top:50%; left:50%;
+      width:200px; height:200px; margin:-100px 0 0 -100px;
+      border:4px solid rgba(255,255,255,0.7); border-radius:50%;
+      pointer-events:none; display:none; z-index:5;
     }
-
-    .section {
-      margin-top: 20px;
-      width: 360px;
-      background: #fff3e0;
-      border: 2px dashed #ffab91;
-      border-radius: 8px;
-      padding: 20px;
-      box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.2);
+    #ui {
+      position:absolute; top:10px; left:10px; z-index:5; color:white;
     }
-
-    .section div {
-      margin-bottom: 12px;
-      font-size: 1rem;
+    #ui div { margin-bottom:4px; }
+    #peerControls {
+      position:absolute; bottom:10px; left:10px; z-index:5;
+      color:white; background:rgba(0,0,0,0.5); padding:8px; border-radius:4px;
     }
-
-    input[type="text"] {
-      width: calc(100% - 16px);
-      padding: 6px;
-      border: 1px solid #ffab91;
-      border-radius: 4px;
-      font-size: 1rem;
-    }
-
-    button {
-      padding: 8px 16px;
-      background: #ff7043;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      font-size: 1rem;
-      cursor: pointer;
-      box-shadow: 1px 1px 0 rgba(0, 0, 0, 0.2);
-    }
-
-    button:disabled {
-      background: #ffe0e0;
-      cursor: default;
-      opacity: 0.6;
-    }
-
-    /* Chat styling */
-    #chatContainer {
-      margin-top: 20px;
-      width: 360px;
-      background: #fff8e1;
-      border: 2px solid #ffab91;
-      border-radius: 8px;
-      display: flex;
-      flex-direction: column;
-      max-height: 300px;
-      box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.2);
-    }
-
-    #chatLog {
-      flex: 1;
-      overflow-y: auto;
-      padding: 10px;
-      font-size: 0.9rem;
-      background: #fff;
-      border-bottom: 1px solid #ffab91;
-    }
-
-    #chatLog .chat-msg {
-      margin: 4px 0;
-    }
-
-    #chatInput {
-      display: flex;
-      padding: 8px;
-      background: #fff8e1;
-    }
-
-    #chatInput input[type="text"] {
-      flex: 1;
-      padding: 6px;
-      border: 1px solid #ffab91;
-      border-radius: 4px;
-      font-size: 1rem;
-    }
-
-    #chatInput button {
-      margin-left: 8px;
-    }
-
-    /* Video container */
-    #videoContainer {
-      margin-top: 20px;
-      width: 360px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-
-    #localVideo, .remote-video {
-      width: 160px;
-      height: 120px;
-      background: black;
-      border: 2px solid #ffab91;
-      border-radius: 4px;
-      margin-bottom: 10px;
-      object-fit: cover;
-    }
-
-    #remotes {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: center;
-      gap: 8px;
-    }
+    #peerControls input { width:100px; margin-right:4px; }
   </style>
 </head>
 <body>
-  <header>🍲 Food Fight Live – Custom Peer ID with Chat Cooldown 🍲</header>
+  <canvas id="game"></canvas>
 
-  <!-- SECTION: Custom ID Input -->
-  <div id="idSection" class="section">
-    <div>Choose a short Peer ID (no spaces, letters/numbers only):</div>
-    <input type="text" id="custom-id-input" placeholder="e.g., food123" maxlength="10" />
-    <button id="set-id-btn">Set My ID</button>
+  <!-- Start -->
+  <div id="startOverlay">
+    <h1>2D Shooter</h1>
+    <div>
+      <label>Your ID: <input id="myId" placeholder="peer-id"></label>
+      <button id="initPeer">Init</button>
+    </div>
+    <div>
+      <label>Connect to: <input id="otherId" placeholder="peer-id"></label>
+      <button id="connectPeer">Connect</button>
+    </div>
+    <button id="startGame">Start</button>
+    <div id="connStatus"></div>
   </div>
 
-  <!-- SECTION: Main Controls (hidden until ID set) -->
-  <div id="mainSection" class="section" style="display: none;">
-    <div>Your Peer ID: <span id="my-id">...</span></div>
-    <div>Role: <span id="role">—</span></div>
-
-    <div id="joinSection">
-      <label for="host-id-input">Enter Host’s Peer ID to join:</label><br/>
-      <input type="text" id="host-id-input" placeholder="Host Peer ID" />
-      <button id="join-btn">Join Host</button>
-    </div>
-
-    <div id="peerCountSection" style="display: none;">
-      Connected Peers (including you): <span id="peer-count">1</span>
-    </div>
-    <div id="startSection" style="display: none;">
-      <button id="start-btn">Start Game</button>
-    </div>
+  <!-- End -->
+  <div id="endOverlay" style="display:none">
+    <h1 id="endMsg"></h1>
+    <button id="rematch">Rematch</button>
   </div>
 
-  <!-- SECTION: Chat (hidden until after role is determined) -->
-  <div id="chatContainer" style="display: none;">
-    <div id="chatLog"></div>
-    <div id="chatInput">
-      <input type="text" id="chatText" placeholder="Type a message…" maxlength="200" />
-      <button id="sendChatBtn">Send</button>
-    </div>
+  <!-- Scope -->
+  <div id="scope"></div>
+
+  <!-- HUD -->
+  <div id="ui">
+    <div>You: <progress id="myHealth" value="5" max="5"></progress></div>
+    <div>Enemy: <progress id="otherHealth" value="5" max="5"></progress></div>
   </div>
 
-  <!-- SECTION: Video (hidden until after role is determined) -->
-  <div id="videoContainer" style="display: none;">
-    <video id="localVideo" autoplay muted></video>
-    <div id="remotes"></div>
+  <!-- Peer Controls / Voice -->
+  <div id="peerControls">
+    <label><input type="checkbox" id="voiceToggle"> Voice Chat</label>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <script>
-    let peer, isHost = false, connections = {}, mediaConnections = {}, clientConn = null, localStream = null;
-    let lastSentTime = 0; // Timestamp of last sent chat message
+  // Canvas
+  const canvas = document.getElementById('game'), ctx = canvas.getContext('2d');
+  function resize(){ canvas.width = innerWidth; canvas.height = innerHeight; }
+  window.addEventListener('resize', resize); resize();
 
-    // UI references
-    const idSection = document.getElementById('idSection');
-    const mainSection = document.getElementById('mainSection');
-    const myIdSpan = document.getElementById('my-id');
-    const roleSpan = document.getElementById('role');
-    const joinSection = document.getElementById('joinSection');
-    const peerCountSection = document.getElementById('peerCountSection');
-    const peerCountSpan = document.getElementById('peer-count');
-    const startSection = document.getElementById('startSection');
+  // Game state
+  const size = 40;
+  let me = { x: size, y: canvas.height/2, angle:0, alive:true, color:'#4af', health:5, dabTime:0 };
+  let other = { x: canvas.width - size, y: canvas.height/2, angle:0, alive:true, color:'#fa4', health:5, dabTime:0 };
+  let bullets = [], debris = [];
 
-    const chatContainer = document.getElementById('chatContainer');
-    const chatLog = document.getElementById('chatLog');
-    const chatText = document.getElementById('chatText');
-    const sendChatBtn = document.getElementById('sendChatBtn');
+  // Controls
+  const keys = {};
+  window.addEventListener('keydown', e=> keys[e.code]=true);
+  window.addEventListener('keyup',   e=> keys[e.code]=false);
+  let mouse = { x:0, y:0 };
+  canvas.addEventListener('mousemove', e=>{
+    const r = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - r.left;
+    mouse.y = e.clientY - r.top;
+    me.angle = Math.atan2(mouse.y - me.y, mouse.x - me.x);
+  });
+  canvas.addEventListener('mousedown', () => shoot());
 
-    const videoContainer = document.getElementById('videoContainer');
-    const localVideo = document.getElementById('localVideo');
-    const remotesDiv = document.getElementById('remotes');
+  // Shoot
+  function shoot(){
+    if(!me.alive) return;
+    bullets.push({
+      x: me.x + Math.cos(me.angle)*size/2,
+      y: me.y + Math.sin(me.angle)*size/2,
+      vx: Math.cos(me.angle)*8,
+      vy: Math.sin(me.angle)*8,
+      owner: 'me'
+    });
+    doDab(true);
+    send({ shoot:true });
+  }
 
-    // ─────────── SET CUSTOM ID ───────────
+  // Dab tilt
+  function doDab(isLocal){
+    const p = isLocal? me: other;
+    p.dabTime = 20;
+  }
 
-    document.getElementById('set-id-btn').onclick = () => {
-      const chosenId = document.getElementById('custom-id-input').value.trim();
-      if (!/^[a-zA-Z0-9]+$/.test(chosenId)) {
-        alert('ID must be letters and numbers only (no spaces).');
-        return;
-      }
-      initializePeer(chosenId);
-      idSection.style.display = 'none';
-      mainSection.style.display = 'block';
-    };
-
-    // ─────────── INITIALIZE PEER.JS WITH CUSTOM ID ───────────
-
-    function initializePeer(myId) {
-      peer = new Peer(myId);
-
-      peer.on('open', id => {
-        myIdSpan.textContent = id;
-        // Assume host until joining another
-        isHost = true;
-        roleSpan.textContent = 'Host';
-        peerCountSection.style.display = 'block';
-        startSection.style.display = 'block';
-        updatePeerCount();
-        openUserMedia().then(() => {
-          videoContainer.style.display = 'flex';
-        });
-        chatContainer.style.display = 'flex';
+  // Explosion
+  function explode(x,y,color){
+    for(let i=0;i<12;i++){
+      debris.push({
+        x,y,
+        vx:(Math.random()*2-1)*5,
+        vy:(Math.random()*2-1)*5,
+        life:60,
+        color
       });
+    }
+  }
 
-      // Incoming data connection (host receives from client)
-      peer.on('connection', conn => {
-        isHost = true;
-        roleSpan.textContent = 'Host';
-        joinSection.style.display = 'none';
-        peerCountSection.style.display = 'block';
-        startSection.style.display = 'block';
+  // Death handlers
+  function meDie(){
+    me.alive = false;
+    explode(me.x, me.y, me.color);
+    send({ die:true });
+    showEnd('You Lose');
+  }
+  function otherDie(){
+    other.alive = false;
+    explode(other.x, other.y, other.color);
+    showEnd('You Win');
+  }
 
-        connections[conn.peer] = conn;
-        updatePeerCount();
+  // Health UI
+  const myHP = document.getElementById('myHealth'),
+        oHP  = document.getElementById('otherHealth');
+  function updateHP(){
+    myHP.value = me.health;
+    oHP.value  = other.health;
+  }
 
-        conn.on('data', data => {
-          if (data.type === 'chat') {
-            appendChatMessage(data.from, data.message);
-            if (isHost) broadcastChat(data.from, data.message);
-          }
-        });
+  // Process bullets
+  function processBullets(){
+    bullets = bullets.filter(b=>{
+      b.x += b.vx; b.y += b.vy;
+      // collision
+      if(b.owner==='me' && other.alive){
+        if(Math.hypot(b.x-other.x,b.y-other.y) < size){
+          other.health--;
+          updateHP();
+          send({ hit:true });
+          if(other.health<=0) otherDie();
+          return false;
+        }
+      }
+      if(b.owner==='other' && me.alive){
+        if(Math.hypot(b.x-me.x,b.y-me.y) < size){
+          me.health--;
+          updateHP();
+          if(me.health<=0) meDie();
+          return false;
+        }
+      }
+      // bounds
+      return b.x>=0 && b.x<=canvas.width && b.y>=0 && b.y<=canvas.height;
+    });
+  }
 
-        conn.on('close', () => {
-          delete connections[conn.peer];
-          updatePeerCount();
-          removeRemoteVideo(conn.peer);
-        });
+  // Networking & Voice
+  let peer, conn, localStream;
+  const status = document.getElementById('connStatus');
 
-        // Host calls new client
+  document.getElementById('initPeer').onclick = ()=>{
+    const id = document.getElementById('myId').value.trim();
+    if(!id) return alert('Enter your peer ID');
+    peer = new Peer(id);
+    peer.on('open', ()=> status.textContent = `Peer ready: ${id}`);
+    peer.on('connection', c=>{ conn=c; setupConn(); });
+    // prepare voice
+    navigator.mediaDevices.getUserMedia({ audio:true }).then(s=> localStream = s);
+  };
+
+  document.getElementById('connectPeer').onclick = ()=>{
+    if(!peer) return alert('Init first');
+    const otherId = document.getElementById('otherId').value.trim();
+    conn = peer.connect(otherId);
+    setupConn();
+  };
+
+  function setupConn(){
+    conn.on('open', ()=>{
+      status.textContent = 'Connected!';
+      // voice call
+      if(localStream && document.getElementById('voiceToggle').checked){
         const call = peer.call(conn.peer, localStream);
-        mediaConnections[conn.peer] = call;
-        setupCallHandlers(call);
-      });
+        call.on('stream', playStream);
+      }
+    });
+    // answer incoming voice call
+    peer.on('call', c=>{
+      if(localStream) {
+        c.answer(localStream);
+        c.on('stream', playStream);
+      }
+    });
+    conn.on('data', d=>{
+      if(d.pos)    [other.x, other.y] = d.pos;
+      if(d.angle!=null) other.angle = d.angle;
+      if(d.shoot)  bullets.push({
+                      x: other.x + Math.cos(other.angle)*size/2,
+                      y: other.y + Math.sin(other.angle)*size/2,
+                      vx: Math.cos(other.angle)*8,
+                      vy: Math.sin(other.angle)*8,
+                      owner: 'other'
+                    });
+      if(d.dab)    doDab(false);
+      if(d.hit){
+        other.health--;
+        updateHP();
+        if(other.health<=0) otherDie();
+      }
+      if(d.die)    otherDie();
+    });
+  }
 
-      // Incoming media call (somebody calls you)
-      peer.on('call', call => {
-        call.answer(localStream);
-        mediaConnections[call.peer] = call;
-        setupCallHandlers(call);
-      });
+  function playStream(stream){
+    const audio = document.createElement('audio');
+    audio.srcObject = stream;
+    audio.autoplay = true;
+    document.body.appendChild(audio);
+  }
+
+  function send(obj){
+    if(conn && conn.open) conn.send({
+      pos:[me.x, me.y],
+      angle:me.angle,
+      shoot:obj.shoot||false,
+      dab:obj.dab||false,
+      hit:obj.hit||false,
+      die:obj.die||false
+    });
+  }
+
+  // Start / End
+  document.getElementById('startGame').onclick = ()=>{
+    document.getElementById('startOverlay').style.display = 'none';
+  };
+  const endOv = document.getElementById('endOverlay'),
+        endMsg = document.getElementById('endMsg');
+  function showEnd(msg){
+    endMsg.textContent = msg;
+    endOv.style.display = 'flex';
+  }
+  document.getElementById('rematch').onclick = ()=>{
+    // reset state
+    me = { x: size, y: canvas.height/2, angle:0, alive:true, color:'#4af', health:5, dabTime:0 };
+    other = { x: canvas.width-size, y:canvas.height/2, angle:0, alive:true, color:'#fa4', health:5, dabTime:0 };
+    bullets = []; debris = [];
+    updateHP();
+    endOv.style.display = 'none';
+  };
+
+  // Main loop
+  function loop(){
+    // movement
+    if(me.alive){
+      if(keys['KeyW']) me.y -= 4;
+      if(keys['KeyS']) me.y += 4;
+      if(keys['KeyA']) me.x -= 4;
+      if(keys['KeyD']) me.x += 4;
     }
 
-    // ─────────── JOIN HOST ───────────
+    processBullets();
+    send({}); // send position/angle
 
-    document.getElementById('join-btn').onclick = () => {
-      const hostId = document.getElementById('host-id-input').value.trim();
-      if (!hostId) return;
-
-      clientConn = peer.connect(hostId);
-
-      clientConn.on('open', () => {
-        isHost = false;
-        roleSpan.textContent = 'Client';
-        joinSection.style.display = 'none';
-        peerCountSection.style.display = 'none';
-        startSection.style.display = 'none';
-
-        chatContainer.style.display = 'flex';
-        videoContainer.style.display = 'flex';
-        openUserMedia().then(() => {
-          const call = peer.call(hostId, localStream);
-          mediaConnections[hostId] = call;
-          setupCallHandlers(call);
-        });
-      });
-
-      clientConn.on('data', data => {
-        if (data.type === 'chat') {
-          appendChatMessage(data.from, data.message);
-        } else if (data.type === 'peer-count') {
-          peerCountSpan.textContent = data.count;
-        } else if (data.type === 'start') {
-          appendSystemMessage('Host has started the game!');
-        }
-      });
-
-      clientConn.on('close', () => {
-        appendSystemMessage('Disconnected from host.');
-      });
-    };
-
-    // ─────────── HOST: UPDATE PEER COUNT ───────────
-
-    function updatePeerCount() {
-      const count = Object.keys(connections).length + 1;
-      peerCountSpan.textContent = count;
-      Object.values(connections).forEach(conn => {
-        if (conn.open) {
-          conn.send({ type: 'peer-count', count });
-        }
-      });
-    }
-
-    // ─────────── HOST: START GAME ───────────
-
-    document.getElementById('start-btn').onclick = () => {
-      Object.values(connections).forEach(conn => {
-        if (conn.open) {
-          conn.send({ type: 'start' });
-        }
-      });
-      appendSystemMessage('You (Host) started the game!');
-      // Insert game-start logic here
-    };
-
-    // ─────────── CHAT FUNCTIONALITY WITH COOLDOWN ───────────
-
-    sendChatBtn.onclick = sendChat;
-    chatText.addEventListener('keypress', e => {
-      if (e.key === 'Enter') sendChat();
+    // update debris
+    debris = debris.filter(d=>{
+      d.x += d.vx; d.y += d.vy; d.life--;
+      return d.life>0;
     });
 
-    function sendChat() {
-      const rawMessage = chatText.value;
-      const message = rawMessage.trim();
-      const now = Date.now();
+    // draw
+    ctx.clearRect(0,0,canvas.width,canvas.height);
 
-      // No empty/whitespace-only messages
-      if (!message) {
-        chatText.value = '';
-        return;
-      }
-      // Enforce 0.75s cooldown between sends
-      if (now - lastSentTime < 750) {
-        // Optionally show a quick system message or just ignore
-        appendSystemMessage('Please wait before sending another message.');
-        return;
-      }
-
-      lastSentTime = now;
-      const fromId = peer.id;
-      appendChatMessage('You', message);
-
-      if (isHost) {
-        // Host: broadcast to all clients
-        broadcastChat('Host', message);
-      } else {
-        // Client: send to host, who will rebroadcast
-        clientConn.send({ type: 'chat', from: fromId, message });
-      }
-
-      chatText.value = '';
+    // other
+    if(other.alive){
+      ctx.save();
+      ctx.translate(other.x, other.y);
+      if(other.dabTime>0){ ctx.rotate(Math.PI/4); other.dabTime--; }
+      else ctx.rotate(other.angle);
+      ctx.fillStyle = other.color;
+      ctx.fillRect(-size/2,-size/2,size,size);
+      ctx.restore();
     }
 
-    function broadcastChat(from, message) {
-      Object.values(connections).forEach(conn => {
-        if (conn.open) {
-          conn.send({ type: 'chat', from, message });
-        }
-      });
+    // me
+    if(me.alive){
+      ctx.save();
+      ctx.translate(me.x, me.y);
+      if(me.dabTime>0){ ctx.rotate(-Math.PI/4); me.dabTime--; }
+      else ctx.rotate(me.angle);
+      ctx.fillStyle = me.color;
+      ctx.fillRect(-size/2,-size/2,size,size);
+      ctx.restore();
     }
 
-    function appendChatMessage(sender, text) {
-      const line = document.createElement('div');
-      line.className = 'chat-msg';
-      line.textContent = `[${sender}]: ${text}`;
-      chatLog.appendChild(line);
-      chatLog.scrollTop = chatLog.scrollHeight;
-    }
-
-    function appendSystemMessage(text) {
-      const line = document.createElement('div');
-      line.className = 'chat-msg';
-      line.style.fontStyle = 'italic';
-      line.textContent = `* ${text}`;
-      chatLog.appendChild(line);
-      chatLog.scrollTop = chatLog.scrollHeight;
-    }
-
-    // ─────────── VIDEO/CALL HANDLERS ───────────
-
-    async function openUserMedia() {
-      try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localVideo.srcObject = localStream;
-      } catch (err) {
-        console.error('Failed to get media:', err);
-        alert('Cannot access webcam/mic. Video chat unavailable.');
-      }
-    }
-
-    function setupCallHandlers(call) {
-      call.on('stream', remoteStream => {
-        if (!document.getElementById(`vid-${call.peer}`)) {
-          addRemoteVideo(call.peer, remoteStream);
-        }
-      });
-
-      call.on('close', () => {
-        removeRemoteVideo(call.peer);
-      });
-
-      call.on('error', err => {
-        console.error('Call error:', err);
-      });
-    }
-
-    function addRemoteVideo(peerId, stream) {
-      const video = document.createElement('video');
-      video.id = `vid-${peerId}`;
-      video.className = 'remote-video';
-      video.autoplay = true;
-      video.srcObject = stream;
-      remotesDiv.appendChild(video);
-    }
-
-    function removeRemoteVideo(peerId) {
-      const video = document.getElementById(`vid-${peerId}`);
-      if (video) video.remove();
-    }
-
-    // ─────────── CLEANUP ON LEAVE ───────────
-
-    window.addEventListener('beforeunload', () => {
-      if (isHost) {
-        Object.values(connections).forEach(conn => conn.close());
-      }
-      if (clientConn) clientConn.close();
-      Object.values(mediaConnections).forEach(call => call.close());
-      peer.destroy();
+    // bullets
+    bullets.forEach(b=>{
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(b.x,b.y,5,0,2*Math.PI); ctx.fill();
     });
+
+    // debris
+    debris.forEach(d=>{
+      ctx.fillStyle = d.color;
+      ctx.fillRect(d.x-4,d.y-4,8,8);
+    });
+
+    requestAnimationFrame(loop);
+  }
+  updateHP(); loop();
   </script>
 </body>
 </html>
