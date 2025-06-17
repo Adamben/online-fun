@@ -2,31 +2,62 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>2D Shooter w/ Full Sync, Touch & Sound</title>
+  <title>2D Shooter w/ Full Sync, Touch, Sound & Vibration</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, orientation=landscape">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <style>
     html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; touch-action:none; }
     canvas { display:block; background:#222; }
+
     /* Overlays */
     #startOverlay, #endOverlay {
       position:absolute; top:0; left:0; right:0; bottom:0;
-      background:rgba(0,0,0,0.8); color:white;
+      background:rgba(0,0,0,0.9); color:white;
       display:flex; flex-direction:column; align-items:center; justify-content:center;
       z-index:100;
+      font-family: sans-serif;
     }
     #endOverlay { display:none; }
-    #startOverlay input, #startOverlay button, #endOverlay button {
-      margin:4px; padding:8px; font-size:16px;
+
+    #startOverlay h1 {
+      font-size: 3em;
+      margin-bottom: 0.5em;
     }
+    #startOverlay label {
+      display: block;
+      font-size: 1.2em;
+      margin: 0.5em 0;
+    }
+    #startOverlay input[type="text"] {
+      font-size: 1.2em;
+      padding: 0.5em;
+      width: 250px;
+    }
+    #startOverlay button {
+      font-size: 1.3em;
+      padding: 0.6em 1em;
+      margin: 0.5em;
+    }
+    #startOverlay #sliderContainer {
+      margin-top: 1em;
+      text-align: center;
+    }
+    #startOverlay input[type="range"] {
+      width: 300px;
+    }
+
     /* HUD */
     #ui { position:absolute; top:10px; left:10px; color:white; z-index:5; }
     #ui div { margin-bottom:4px; }
+
     /* Joystick zones */
     .joystick-zone {
-      position:absolute; width:150px; height:150px;
-      z-index:10;
+      position:absolute; z-index:10;
+      bottom:20px;
     }
-    #leftZone  { bottom:20px; left:20px; }
-    #rightZone { bottom:20px; right:20px; }
+    #leftZone  { left:20px;  }
+    #rightZone { right:20px; }
+
   </style>
   <!-- PeerJS & NippleJS -->
   <script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
@@ -38,16 +69,21 @@
   <!-- Start / End Overlays -->
   <div id="startOverlay">
     <h1>2D Shooter</h1>
-    <div>
-      <label>Your ID: <input id="myId" placeholder="peer‑id"></label>
-      <button id="initPeer">Init</button>
-    </div>
-    <div>
-      <label>Connect to: <input id="otherId" placeholder="peer‑id"></label>
-      <button id="connectPeer">Connect</button>
-    </div>
+    <label>Your ID:
+      <input id="myId" type="text" placeholder="peer‑id">
+    </label>
+    <button id="initPeer">Init</button>
+    <label>Connect to:
+      <input id="otherId" type="text" placeholder="peer‑id">
+    </label>
+    <button id="connectPeer">Connect</button>
     <button id="startGame">Start</button>
-    <div id="connStatus"></div>
+    <div id="connStatus" style="margin-top:0.5em;font-size:1em;"></div>
+
+    <div id="sliderContainer">
+      <label for="jSize">Joystick Size: <span id="jSizeVal">150</span>px</label><br>
+      <input id="jSize" type="range" min="100" max="300" value="150">
+    </div>
   </div>
   <div id="endOverlay">
     <h1 id="endMsg"></h1>
@@ -67,75 +103,109 @@
   <script>
   // —— Setup & State ——
   const canvas = document.getElementById('game'), ctx = canvas.getContext('2d');
-  function resize(){ canvas.width=innerWidth; canvas.height=innerHeight; }
-  window.addEventListener('resize', resize); resize();
+  function resize(){
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width  = innerWidth * dpr;
+    canvas.height = innerHeight * dpr;
+    canvas.style.width  = innerWidth + 'px';
+    canvas.style.height = innerHeight + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
 
   const size = 40;
   let frameCount = 0;
-  let me =    { x:size, y:canvas.height/2, angle:0, alive:true, health:5, dabTime:0 };
+  let me    = { x:size, y:canvas.height/2, angle:0, alive:true, health:5, dabTime:0 };
   let other = { x:canvas.width-size, y:canvas.height/2, angle:0, alive:true, health:5, dabTime:0 };
   let bullets = [], debris = [];
+  const myCols    = ['#4af','#6cf'], otherCols = ['#fa4','#fc6'];
 
-  const myCols    = ['#4af','#6cf'],
-        otherCols = ['#fa4','#fc6'];
+  let leftStick = { x:0, y:0 }, lastRightVec = { x:0, y:0 };
+  let leftManager, rightManager;
+  let joystickSize = 150;
 
-  let leftStick = { x:0, y:0 };
-  let lastRightVec = { x:0, y:0 };
+  // —— Create Joysticks ——
+  function createJoysticks(sizePx) {
+    // clear old
+    if (leftManager) leftManager.destroy();
+    if (rightManager) rightManager.destroy();
+    // style zones
+    [ 'leftZone', 'rightZone' ].forEach(id => {
+      const el = document.getElementById(id);
+      el.style.width  = sizePx + 'px';
+      el.style.height = sizePx + 'px';
+    });
+    // left
+    leftManager = nipplejs.create({
+      zone: document.getElementById('leftZone'),
+      mode: 'static', position: { left: '50%', top: '50%' },
+      color: 'white', size: sizePx
+    });
+    leftManager.on('move', (_, data) => {
+      leftStick.x = data.vector.x;
+      leftStick.y = -data.vector.y;
+    });
+    leftManager.on('end', () => { leftStick.x = 0; leftStick.y = 0; });
 
-  // —— Joysticks via NippleJS ——
-  const leftManager = nipplejs.create({
-    zone: document.getElementById('leftZone'),
-    mode: 'static', position: { left: '50%', top: '50%' },
-    color: 'white', size: 150
-  });
-  leftManager.on('move', (_, data) => {
-    leftStick.x = data.vector.x;
-    leftStick.y = -data.vector.y;            // invert Y
-  });
-  leftManager.on('end', () => {
-    leftStick.x = 0; leftStick.y = 0;
-  });
+    // right
+    rightManager = nipplejs.create({
+      zone: document.getElementById('rightZone'),
+      mode: 'static', position: { left: '50%', top: '50%' },
+      color: 'white', size: sizePx
+    });
+    rightManager.on('move', (_, data) => {
+      const vx = data.vector.x, vy = -data.vector.y;
+      lastRightVec.x = vx; lastRightVec.y = vy;
+      me.angle = Math.atan2(vy, vx);
+    });
+    rightManager.on('end', () => {
+      const mag = Math.hypot(lastRightVec.x, lastRightVec.y);
+      if (mag > 0.2) {
+        me.angle = Math.atan2(lastRightVec.y, lastRightVec.x);
+        shoot();
+      }
+      lastRightVec.x = 0; lastRightVec.y = 0;
+    });
+  }
 
-  const rightManager = nipplejs.create({
-    zone: document.getElementById('rightZone'),
-    mode: 'static', position: { left: '50%', top: '50%' },
-    color: 'white', size: 150
-  });
-  rightManager.on('move', (_, data) => {
-    const vx = data.vector.x;
-    const vy = -data.vector.y;               // invert Y
-    lastRightVec.x = vx;
-    lastRightVec.y = vy;
-    me.angle = Math.atan2(vy, vx);
-  });
-  rightManager.on('end', () => {
-    // if the stick was pushed, launch in that direction
-    const mag = Math.hypot(lastRightVec.x, lastRightVec.y);
-    if (mag > 0.2) {
-      me.angle = Math.atan2(lastRightVec.y, lastRightVec.x);
-      shoot();
-    }
-    lastRightVec.x = 0;
-    lastRightVec.y = 0;
+  // init first time
+  createJoysticks(joystickSize);
+
+  // joystick slider
+  document.getElementById('jSize').addEventListener('input', e => {
+    joystickSize = +e.target.value;
+    document.getElementById('jSizeVal').textContent = joystickSize;
+    createJoysticks(joystickSize);
   });
 
   // —— Tap-to-Shoot ——
   document.addEventListener('touchstart', ev => {
     const t = ev.touches[0];
-    if (t.clientY > canvas.height * 0.75) {
+    if (t.clientY > canvas.height * 0.6) {
       me.angle = Math.atan2(t.clientY - me.y, t.clientX - me.x);
       shoot();
     }
   });
 
-  // —— Audio Beeps ——
+  // —— Audio & Vibration ——
   const audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  let audioUnlocked = false;
+  window.addEventListener('touchstart', () => {
+    if (!audioUnlocked) {
+      // unlock on iOS
+      const buf = audioCtx.createBuffer(1,1,22050);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf; src.connect(audioCtx.destination);
+      src.start(0);
+      audioUnlocked = true;
+    }
+  }, { once: true });
+
   function playBeep(freq, duration=0.1){
-    const osc = audioCtx.createOscillator(),
-          gain = audioCtx.createGain();
+    const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
     osc.frequency.value = freq;
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
+    osc.connect(gain); gain.connect(audioCtx.destination);
     osc.start();
     gain.gain.setValueAtTime(1, audioCtx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
@@ -153,8 +223,9 @@
       owner: 'me'
     });
     dab(me);
-    playBeep(600, 0.05);
-    send({ shoot: true, pos: [me.x, me.y], angle: me.angle });
+    playBeep(600,0.05);
+    if (navigator.vibrate) navigator.vibrate(20);
+    send({ shoot:true, pos:[me.x,me.y], angle:me.angle });
   }
   function dab(p){ p.dabTime = 20; }
   function explode(x,y){
@@ -168,36 +239,34 @@
     }
   }
   function meDie(){
-    me.alive = false;
-    explode(me.x, me.y);
-    playBeep(110, 0.3);
-    send({ die:true });
+    me.alive=false; explode(me.x,me.y);
+    playBeep(110,0.3);
     showEnd('You Lose');
+    send({ die:true });
   }
   function otherDie(){
-    other.alive = false;
-    explode(other.x, other.y);
-    playBeep(880, 0.3);
+    other.alive=false; explode(other.x,other.y);
+    playBeep(880,0.3);
     showEnd('You Win');
   }
 
   // —— Health Sync ——
-  const myHP = document.getElementById('myHealth'), oHP = document.getElementById('otherHealth');
+  const myHP = document.getElementById('myHealth'),
+        oHP  = document.getElementById('otherHealth');
   function updateHP(){
-    myHP.value = me.health;
-    oHP.value  = other.health;
+    myHP.value = me.health; oHP.value = other.health;
   }
   function takeDamage(){
     me.health = Math.max(0, me.health - 1);
-    playBeep(200, 0.1);
-    updateHP();
-    flashScreen();
+    playBeep(200,0.1);
+    if (navigator.vibrate) navigator.vibrate(100);
+    updateHP(); flashScreen();
     send({ health: me.health });
     if (me.health <= 0) meDie();
   }
   function flashScreen(){
     canvas.style.backgroundColor = '#400';
-    setTimeout(() => canvas.style.backgroundColor = '#222', 100);
+    setTimeout(()=> canvas.style.backgroundColor = '#222', 100);
   }
 
   // —— Bullet Logic ——
@@ -206,15 +275,14 @@
       b.x += b.vx; b.y += b.vy;
       if (b.owner==='me' && other.alive &&
           Math.hypot(b.x-other.x,b.y-other.y) < size) {
-        dab(other);
-        return false;
+        dab(other); return false;
       }
       if (b.owner==='other' && me.alive &&
           Math.hypot(b.x-me.x,b.y-me.y) < size) {
-        takeDamage();
-        return false;
+        takeDamage(); return false;
       }
-      return b.x>=0 && b.x<=canvas.width && b.y>=0 && b.y<=canvas.height;
+      return b.x>=0 && b.x<=canvas.width &&
+             b.y>=0 && b.y<=canvas.height;
     });
   }
 
@@ -262,45 +330,39 @@
           y: d.pos[1] + Math.sin(d.angle)*size/2,
           vx: Math.cos(d.angle)*8,
           vy: Math.sin(d.angle)*8,
-          owner:'other'
+          owner: 'other'
         });
       }
-      if (d.health != null) {
-        other.health = d.health;
-        updateHP();
+      if (d.health!=null){
+        other.health = d.health; updateHP();
         if (other.health <= 0) otherDie();
       }
       if (d.die) otherDie();
     });
   }
-
   function playStream(stream){
     const audio = document.createElement('audio');
-    audio.srcObject = stream;
-    audio.autoplay = true;
+    audio.srcObject = stream; audio.autoplay = true;
     document.body.appendChild(audio);
   }
-
   function send(obj){
-    if (conn && conn.open) conn.send(Object.assign({ pos: [me.x, me.y], angle: me.angle }, obj));
+    if (conn && conn.open) conn.send(Object.assign({ pos:[me.x,me.y], angle:me.angle }, obj));
   }
 
   // —— Start / End UI ——
   document.getElementById('startGame').onclick = () => {
     document.getElementById('startOverlay').style.display = 'none';
   };
-  const endOv = document.getElementById('endOverlay'),
-        endMsg= document.getElementById('endMsg');
+  const endOv  = document.getElementById('endOverlay'),
+        endMsg = document.getElementById('endMsg');
   function showEnd(msg){
-    endMsg.textContent = msg;
-    endOv.style.display = 'flex';
+    endMsg.textContent = msg; endOv.style.display = 'flex';
   }
   document.getElementById('rematch').onclick = () => {
-    me =    { x:size, y:canvas.height/2, angle:0, alive:true, health:5, dabTime:0 };
+    me    = { x:size, y:canvas.height/2, angle:0, alive:true, health:5, dabTime:0 };
     other = { x:canvas.width-size, y:canvas.height/2, angle:0, alive:true, health:5, dabTime:0 };
     bullets = []; debris = [];
-    updateHP();
-    endOv.style.display = 'none';
+    updateHP(); endOv.style.display = 'none';
     send({ health: me.health });
   };
 
@@ -312,8 +374,7 @@
       me.x = Math.max(size/2, Math.min(canvas.width-size/2, me.x + leftStick.x*sp));
       me.y = Math.max(size/2, Math.min(canvas.height-size/2, me.y + leftStick.y*sp));
     }
-    processBullets();
-    send({});  // broadcast position/angle
+    processBullets(); send({}); // broadcast
     debris = debris.filter(d => { d.x+=d.vx; d.y+=d.vy; return --d.life>0; });
 
     ctx.clearRect(0,0,canvas.width,canvas.height);
