@@ -2,15 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>2D Shooter w/ Matter.js, Full Sync, Touch, Sound, Vibration</title>
+  <title>2D Shooter – Fixed World Bounds</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, orientation=landscape">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <script src="https://cdn.jsdelivr.net/npm/matter-js@0.19.0/build/matter.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/nipplejs@0.9.0/dist/nipplejs.min.js"></script>
   <style>
-    html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; touch-action:none; }
-    canvas { display:block; background:#222; }
+    html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; touch-action:none; background:#000; }
+    canvas { display:block; background:#222; margin:auto; }
+    /* Overlays */
     #startOverlay, #endOverlay {
       position:absolute; top:0; left:0; right:0; bottom:0;
       background:rgba(0,0,0,0.9); color:white;
@@ -24,8 +25,10 @@
     #startOverlay button { font-size:1.3em; padding:0.6em 1em; margin:0.5em; }
     #sliderContainer { margin-top:1em; text-align:center; }
     #sliderContainer input[type="range"] { width:300px; }
+    /* HUD */
     #ui { position:absolute; top:10px; left:10px; color:white; z-index:5; font-family:sans-serif; }
     #ui div { margin-bottom:4px; }
+    /* Inventory */
     #inventory { position:absolute; top:10px; right:10px; width:50px; height:50px;
       background:rgba(0,0,0,0.5); color:white; font-size:1.5em;
       display:flex; align-items:center; justify-content:center;
@@ -36,12 +39,15 @@
       border:2px solid #fff; border-radius:4px; display:none; z-index:5;
       font-family:sans-serif;
     }
+    /* Joystick zones */
     .joystick-zone { position:absolute; z-index:5; bottom:20px; }
     #leftZone { left:20px; } #rightZone{ right:20px; }
   </style>
 </head>
 <body>
   <canvas id="game"></canvas>
+
+  <!-- Start / End Overlays -->
   <div id="startOverlay">
     <h1>2D Shooter</h1>
     <label>Your ID: <input id="myId" type="text" placeholder="peer‑id"></label>
@@ -55,14 +61,19 @@
       <input id="jSize" type="range" min="100" max="300" value="150">
     </div>
   </div>
+
   <div id="endOverlay">
     <h1 id="endMsg"></h1>
     <button id="rematch">Rematch</button>
   </div>
+
+  <!-- HUD -->
   <div id="ui">
     <div>You: <progress id="myHealth" max="5" value="5"></progress></div>
     <div>Enemy: <progress id="otherHealth" max="5" value="5"></progress></div>
   </div>
+
+  <!-- Inventory -->
   <div id="inventory">I</div>
   <div id="inventoryDetails">
     <strong>Inventory</strong><br>
@@ -70,119 +81,204 @@
     Blocks: interactive<br>
     Kills: <span id="myKills">0</span>
   </div>
+
+  <!-- Joysticks -->
   <div id="leftZone" class="joystick-zone"></div>
   <div id="rightZone" class="joystick-zone"></div>
+
   <script>
-  // —— Setup & State ——
-  const canvas = document.getElementById('game'), ctx = canvas.getContext('2d');
-  let W = window.innerWidth, H = window.innerHeight;
-  canvas.width = W; canvas.height = H;
+  // — Virtual World Constants —
+  const WORLD_WIDTH  = 2000;
+  const WORLD_HEIGHT = 1000;
+
+  // — Canvas & Matter Setup —
+  const canvas = document.getElementById('game');
+  const ctx    = canvas.getContext('2d');
+  let cw=window.innerWidth, ch=window.innerHeight;
+  canvas.width = cw; canvas.height = ch;
 
   const { Engine, World, Bodies, Body, Events } = Matter;
   const engine = Engine.create(), world = engine.world;
   world.gravity.y = 0;
 
-  let cam = { x:0, y:0, shake:0 };
-  function applyCamera() {
+  // — Compute uniform scale & letterbox offsets —
+  let scale=1, xOffset=0, yOffset=0;
+  function updateViewport(){
+    cw=window.innerWidth; ch=window.innerHeight;
+    // Which dimension constrains the world?
+    scale = Math.min(cw/WORLD_WIDTH, ch/WORLD_HEIGHT);
+    // compute letterboxing centering
+    xOffset = (cw - WORLD_WIDTH * scale) / 2;
+    yOffset = (ch - WORLD_HEIGHT * scale) / 2;
+    canvas.width = cw; canvas.height = ch;
+  }
+  window.addEventListener('resize', updateViewport);
+  updateViewport();
+
+  // — Camera (follows player) —
+  let cam = { x: WORLD_WIDTH/2, y: WORLD_HEIGHT/2, shake:0 };
+  function applyCamera(){
     ctx.setTransform(1,0,0,1,0,0);
+    // clear letterbox
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0,0,cw,ch);
+    // apply letterbox + scale
+    ctx.translate(xOffset, yOffset);
+    ctx.scale(scale, scale);
+    // apply camera shake & centering
     const sx = (Math.random()-0.5)*cam.shake;
     const sy = (Math.random()-0.5)*cam.shake;
-    ctx.translate(-cam.x + W/2 + sx, -cam.y + H/2 + sy);
+    ctx.translate(-cam.x + WORLD_WIDTH/2 + sx, -cam.y + WORLD_HEIGHT/2 + sy);
     cam.shake = Math.max(0, cam.shake * 0.9);
   }
 
-  // — World Borders —
+  // — World Borders (fixed coords) —
   const borders = [
-    Bodies.rectangle(W/2, -10, W, 20, { isStatic:true }),
-    Bodies.rectangle(W/2, H+10, W, 20, { isStatic:true }),
-    Bodies.rectangle(-10, H/2, 20, H, { isStatic:true }),
-    Bodies.rectangle(W+10, H/2, 20, H, { isStatic:true })
+    Bodies.rectangle(WORLD_WIDTH/2, -10, WORLD_WIDTH, 20, { isStatic:true }),
+    Bodies.rectangle(WORLD_WIDTH/2, WORLD_HEIGHT+10, WORLD_WIDTH, 20, { isStatic:true }),
+    Bodies.rectangle(-10, WORLD_HEIGHT/2, 20, WORLD_HEIGHT, { isStatic:true }),
+    Bodies.rectangle(WORLD_WIDTH+10, WORLD_HEIGHT/2, 20, WORLD_HEIGHT, { isStatic:true })
   ];
   World.add(world, borders);
 
-  // — Player & Other —
+  // — Player & Other Entities —
   const size = 40;
-  const player = Bodies.rectangle(size, H/2, size, size, { restitution:0.2, frictionAir:0.1 });
-  const other  = Bodies.rectangle(W-size, H/2, size, size, { restitution:0.2, frictionAir:0.1 });
+  const player = Bodies.rectangle(size, WORLD_HEIGHT/2, size, size, { restitution:0.2, frictionAir:0.1 });
+  const other  = Bodies.rectangle(WORLD_WIDTH-size, WORLD_HEIGHT/2, size, size, { restitution:0.2, frictionAir:0.1 });
   World.add(world, [player, other]);
 
   // — Interactive Blocks —
   const blocks = [];
-  for (let i = 0; i < 5; i++) {
-    const b = Bodies.rectangle(200 + i*140, 200, 60, 60, {
+  for(let i=0;i<5;i++){
+    const b = Bodies.rectangle(200 + i*300, 200, 60, 60, {
       restitution:0.8, frictionAir:0.02, density:0.002
     });
-    b._blockId = i;  // assign ID
+    b._id = i;
     blocks.push(b);
   }
   World.add(world, blocks);
 
-  // — Bullets —
+  // — Bullets & IDs & Lifespan —
   const bullets = [];
   let bulletCounter = 0;
+  function removeBullet(id){
+    const idx = bullets.findIndex(b=>b._id===id);
+    if(idx>=0){
+      World.remove(world, bullets[idx]);
+      bullets.splice(idx,1);
+    }
+  }
+
+  function shoot(isLocal){
+    const angle = Math.atan2(lastRight.y, lastRight.x);
+    const bid   = bulletCounter++;
+    const bx = player.position.x + Math.cos(angle)*(size/2+5);
+    const by = player.position.y + Math.sin(angle)*(size/2+5);
+    const bullet = Bodies.circle(bx, by, 5, { restitution:0.8, frictionAir:0.02, density:0.001 });
+    bullet._id = bid;
+    Body.setVelocity(bullet, { x:Math.cos(angle)*15, y:Math.sin(angle)*15 });
+    bullets.push(bullet);
+    World.add(world, bullet);
+    // schedule auto‑dispersion
+    setTimeout(()=>removeBullet(bid), 3500);
+    // network
+    if(isLocal) send({ shoot:true, bullet:{ id:bid, x:bx, y:by, vx:bullet.velocity.x, vy:bullet.velocity.y }});
+    // feedback
+    playBeep(600,0.05);
+    navigator.vibrate?.(20);
+  }
+
+  function spawnRemoteBullet(bd){
+    if(bullets.some(b=>b._id===bd.id)) return;
+    const bullet = Bodies.circle(bd.x, bd.y, 5, { restitution:0.8, frictionAir:0.02, density:0.001 });
+    bullet._id = bd.id;
+    Body.setVelocity(bullet, { x:bd.vx, y:bd.vy });
+    bullets.push(bullet);
+    World.add(world, bullet);
+    setTimeout(()=>removeBullet(bd.id), 3500);
+  }
 
   // — Joysticks & Touch —
-  let joystickSize = 150, leftManager, rightManager;
-  function createJoysticks(sz) {
-    if (leftManager) leftManager.destroy();
-    if (rightManager) rightManager.destroy();
-    ['leftZone','rightZone'].forEach(id => {
-      const el = document.getElementById(id);
-      el.style.width = sz+'px';
-      el.style.height = sz+'px';
+  let leftStick={x:0,y:0}, lastRight={x:0,y:0};
+  let joystickSize=150, leftMgr, rightMgr;
+  function createJoysticks(sz){
+    if(leftMgr) leftMgr.destroy();
+    if(rightMgr)rightMgr.destroy();
+    ['leftZone','rightZone'].forEach(id=>{
+      const el=document.getElementById(id);
+      el.style.width=sz+'px'; el.style.height=sz+'px';
     });
-    leftManager = nipplejs.create({ zone: document.getElementById('leftZone'),
-      mode:'static', position:{ left:'50%', top:'50%' }, size:sz
-    });
-    rightManager = nipplejs.create({ zone: document.getElementById('rightZone'),
-      mode:'static', position:{ left:'50%', top:'50%' }, size:sz
-    });
-    leftManager.on('move', (_,d)=>{ leftStick.x = d.vector.x; leftStick.y = -d.vector.y; })
-               .on('end', ()=>{ leftStick.x = 0; leftStick.y = 0; });
-    rightManager.on('move',(_,d)=>{ lastRight.x=d.vector.x; lastRight.y=-d.vector.y; })
-                .on('end',()=>{ if(Math.hypot(lastRight.x,lastRight.y)>0.2) shoot(true); lastRight.x=0; lastRight.y=0; });
+    leftMgr  = nipplejs.create({ zone:document.getElementById('leftZone'), mode:'static', position:{ left:'50%', top:'50%' }, size:sz });
+    rightMgr = nipplejs.create({ zone:document.getElementById('rightZone'),mode:'static', position:{ left:'50%', top:'50%' }, size:sz });
+    leftMgr.on('move',(_,d)=>{ leftStick.x=d.vector.x; leftStick.y=-d.vector.y; })
+           .on('end',()=>{ leftStick.x=0; leftStick.y=0; });
+    rightMgr.on('move',(_,d)=>{ lastRight.x=d.vector.x; lastRight.y=-d.vector.y; })
+            .on('end',()=>{ if(Math.hypot(lastRight.x,lastRight.y)>0.2) shoot(true); lastRight.x=0; lastRight.y=0; });
   }
-  document.getElementById('jSize').addEventListener('input', e=>{
-    joystickSize = +e.target.value;
-    document.getElementById('jSizeVal').textContent = joystickSize;
+  document.getElementById('jSize').addEventListener('input',e=>{
+    joystickSize=+e.target.value;
+    document.getElementById('jSizeVal').textContent=joystickSize;
     createJoysticks(joystickSize);
   });
   createJoysticks(joystickSize);
 
-  let leftStick = { x:0, y:0 }, lastRight = { x:0, y:0 };
-
-  canvas.addEventListener('touchstart', ev=>{
-    const t = ev.touches[0];
-    if (t.clientY > H * 0.6) {
-      const dx = t.clientX - player.position.x, dy = t.clientY - player.position.y;
-      lastRight.x = dx / Math.hypot(dx,dy);
-      lastRight.y = dy / Math.hypot(dx,dy);
+  canvas.addEventListener('touchstart',ev=>{
+    const t=ev.touches[0];
+    if(t.clientY > ch*0.6){
+      const dx=t.clientX - (player.position.x*scale + xOffset);
+      const dy=t.clientY - (player.position.y*scale + yOffset);
+      lastRight.x = dx/Math.hypot(dx,dy);
+      lastRight.y = dy/Math.hypot(dx,dy);
       shoot(true);
     }
   });
 
-  // — Audio & Vibration —
+  // — Audio Unlock & Beeps —
   const audioCtx = new (window.AudioContext||window.webkitAudioContext)();
-  let audioUnlocked = false;
-  window.addEventListener('touchstart', ()=>{
-    if (!audioUnlocked) {
-      const buf = audioCtx.createBuffer(1,1,22050);
-      const src = audioCtx.createBufferSource();
-      src.buffer = buf; src.connect(audioCtx.destination); src.start(0);
-      audioUnlocked = true;
+  let audioUnlocked=false;
+  window.addEventListener('touchstart',()=>{
+    if(!audioUnlocked){
+      const buf=audioCtx.createBuffer(1,1,22050);
+      const src=audioCtx.createBufferSource();
+      src.buffer=buf; src.connect(audioCtx.destination); src.start(0);
+      audioUnlocked=true;
     }
-  }, { once:true });
+  },{once:true});
   function playBeep(freq,dur=0.1){
     const osc=audioCtx.createOscillator(), g=audioCtx.createGain();
-    osc.frequency.value = freq; osc.connect(g); g.connect(audioCtx.destination);
+    osc.frequency.value=freq; osc.connect(g); g.connect(audioCtx.destination);
     osc.start(); g.gain.setValueAtTime(1,audioCtx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
     osc.stop(audioCtx.currentTime+dur);
   }
 
-  // — Networking — 
+  // — Networking (PeerJS) —
   let peer, conn;
-  document.getElementById('initPeer').onclick = ()=>{
+  function send(data){
+    if(conn&&conn.open){
+      conn.send(Object.assign({
+        pos:[player.position.x,player.position.y],
+        angle:player.angle,
+        blocks:blocks.map(b=>({ id:b._id, x:b.position.x, y:b.position.y, angle:b.angle }))
+      },data));
+    }
+  }
+  function handleData(d){
+    if(d.pos) Body.setPosition(other,{ x:d.pos[0], y:d.pos[1] });
+    if(d.angle!=null) Body.setAngle(other,d.angle);
+    if(d.health!=null){
+      otherHealth=d.health;
+      document.getElementById('otherHealth').value=otherHealth;
+    }
+    if(d.shoot && d.bullet) spawnRemoteBullet(d.bullet);
+    if(d.blocks){
+      d.blocks.forEach(bd=>{
+        const b=blocks.find(x=>x._id===bd.id);
+        if(b){ Body.setPosition(b,{x:bd.x,y:bd.y}); Body.setAngle(b,bd.angle); }
+      });
+    }
+  }
+  document.getElementById('initPeer').onclick=()=>{
     const id=document.getElementById('myId').value.trim();
     if(!id) return alert('Enter your peer ID');
     peer=new Peer(id);
@@ -198,184 +294,87 @@
     conn.on('open',()=>{
       document.getElementById('connStatus').textContent='Connected!';
       navigator.mediaDevices.getUserMedia({audio:true})
-        .then(stream=>{
-          const call=peer.call(conn.peer,stream);
-          call.on('stream',playStream);
-        }).catch(console.error);
+        .then(stream=>{ const call=peer.call(conn.peer,stream); call.on('stream',playStream); })
+        .catch(console.error);
     });
     peer.on('call',c=>{
       navigator.mediaDevices.getUserMedia({audio:true})
-        .then(stream=>{
-          c.answer(stream);
-          c.on('stream',playStream);
-        }).catch(console.error);
+        .then(stream=>{ c.answer(stream); c.on('stream',playStream); })
+        .catch(console.error);
     });
     conn.on('data',handleData);
   }
   function playStream(stream){
-    const audio=document.createElement('audio');
-    audio.srcObject=stream; audio.autoplay=true;
-    document.body.appendChild(audio);
-  }
-  function send(data){
-    if(conn && conn.open) conn.send(Object.assign({
-      pos:[player.position.x,player.position.y],
-      angle:player.angle,
-      blocks: blocks.map(b=>({
-        id: b._blockId,
-        x: b.position.x, y: b.position.y, angle: b.angle
-      }))
-    }, data));
-  }
-  function handleData(d){
-    // position & angle
-    if(d.pos) Body.setPosition(other, { x:d.pos[0], y:d.pos[1] });
-    if(d.angle!=null) Body.setAngle(other, d.angle);
-    // health sync
-    if(d.health!=null){
-      otherHealth = d.health;
-      document.getElementById('otherHealth').value = otherHealth;
-    }
-    // incoming shoot
-    if(d.shoot && d.bullet){
-      spawnRemoteBullet(d.bullet);
-    }
-    // blocks sync
-    if(d.blocks){
-      d.blocks.forEach(bd => {
-        const b = blocks.find(x => x._blockId === bd.id);
-        if(b){
-          Body.setPosition(b, { x:bd.x, y:bd.y });
-          Body.setAngle(b, bd.angle);
-        }
-      });
-    }
+    const a=document.createElement('audio');
+    a.srcObject=stream; a.autoplay=true;
+    document.body.appendChild(a);
   }
 
-  // — Bullets & Lifespan — 
-  function shoot(isLocal){
-    const angle = Math.atan2(lastRight.y, lastRight.x);
-    const id = bulletCounter++;
-    const bullet = Bodies.circle(
-      player.position.x + Math.cos(angle)*(size/2+5),
-      player.position.y + Math.sin(angle)*(size/2+5),
-      5, { restitution:0.8, frictionAir:0.02, density:0.001 }
-    );
-    Body.setVelocity(bullet, { x:Math.cos(angle)*15, y:Math.sin(angle)*15 });
-    bullet._bulletId = id;
-    bullets.push(bullet);
-    World.add(world, bullet);
-    playBeep(600,0.05);
-    navigator.vibrate?.(20);
-    // schedule removal
-    setTimeout(()=>removeBullet(id), 3500);
-    // send network event
-    if(isLocal) {
-      send({ shoot:true, bullet:{
-        id, x: bullet.position.x, y: bullet.position.y,
-        vx: bullet.velocity.x, vy: bullet.velocity.y
-      }});
-    }
-  }
-
-  function spawnRemoteBullet(bd){
-    // avoid dupes
-    if(bullets.some(b=>b._bulletId===bd.id)) return;
-    const bullet = Bodies.circle(bd.x, bd.y, 5, { restitution:0.8, frictionAir:0.02, density:0.001 });
-    Body.setVelocity(bullet, { x:bd.vx, y:bd.vy });
-    bullet._bulletId = bd.id;
-    bullets.push(bullet);
-    World.add(world, bullet);
-    // schedule removal
-    setTimeout(()=>removeBullet(bd.id), 3500);
-  }
-
-  function removeBullet(id){
-    const idx = bullets.findIndex(b=>b._bulletId===id);
-    if(idx>=0){
-      World.remove(world, bullets[idx]);
-      bullets.splice(idx,1);
-    }
-  }
-
-  // — Health & Kills — 
+  // — Health & Kills —
   let myHealth=5, otherHealth=5, myKills=0;
   function damagePlayer(){
     if(--myHealth<0) myHealth=0;
-    document.getElementById('myHealth').value = myHealth;
-    cam.shake = 20;
-    navigator.vibrate?.(100);
-    send({ health: myHealth });
+    document.getElementById('myHealth').value=myHealth;
+    cam.shake=20; navigator.vibrate?.(100);
+    send({ health:myHealth });
     if(myHealth===0) showEnd('You Died');
   }
   function damageOther(){
     if(--otherHealth<0) otherHealth=0;
-    document.getElementById('otherHealth').value = otherHealth;
+    document.getElementById('otherHealth').value=otherHealth;
     if(otherHealth===0) showEnd('You Win');
   }
-
-  // — Collision Handling — 
-  Events.on(engine, 'collisionStart', ev=>{
+  Events.on(engine,'collisionStart',ev=>{
     ev.pairs.forEach(p=>{
-      const A=p.bodyA, B=p.bodyB;
-      // bullet hits other
-      if(bullets.includes(A)&&B===other){ removeBullet(A._bulletId); damageOther(); myKills++; }
-      if(bullets.includes(B)&&A===other){ removeBullet(B._bulletId); damageOther(); myKills++; }
-      // bullet hits player
-      if(bullets.includes(A)&&B===player){ removeBullet(A._bulletId); damagePlayer(); }
-      if(bullets.includes(B)&&A===player){ removeBullet(B._bulletId); damagePlayer(); }
+      const [A,B]=[p.bodyA,p.bodyB];
+      if(bullets.includes(A)&&B===other){ removeBullet(A._id); damageOther(); myKills++; }
+      if(bullets.includes(B)&&A===other){ removeBullet(B._id); damageOther(); myKills++; }
+      if(bullets.includes(A)&&B===player){ removeBullet(A._id); damagePlayer(); }
+      if(bullets.includes(B)&&A===player){ removeBullet(B._id); damagePlayer(); }
     });
-    document.getElementById('myKills').textContent = myKills;
+    document.getElementById('myKills').textContent=myKills;
   });
 
-  // — Inventory Toggle — 
-  document.getElementById('inventory').onclick = ()=>{
-    const d = document.getElementById('inventoryDetails');
+  // — Inventory Toggle —
+  document.getElementById('inventory').onclick=()=>{
+    const d=document.getElementById('inventoryDetails');
     d.style.display = d.style.display==='block'?'none':'block';
   };
 
-  // — Start / End UI — 
-  document.getElementById('startGame').onclick = ()=>{
+  // — Start / End UI & Loop —
+  document.getElementById('startGame').onclick=()=>{
     document.getElementById('startOverlay').style.display='none';
-    send({}); // start broadcasting
+    send({});
   };
-  const endOv=document.getElementById('endOverlay'),
-        endMsg=document.getElementById('endMsg');
-  function showEnd(msg){
-    endMsg.textContent=msg; endOv.style.display='flex';
-  }
-  document.getElementById('rematch').onclick = ()=>{
+  const endOv=document.getElementById('endOverlay'), endMsg=document.getElementById('endMsg');
+  function showEnd(msg){ endMsg.textContent=msg; endOv.style.display='flex'; }
+  document.getElementById('rematch').onclick=()=>{
     myHealth=otherHealth=5; myKills=0;
     document.getElementById('myHealth').value=5;
     document.getElementById('otherHealth').value=5;
     document.getElementById('myKills').textContent='0';
-    Body.setPosition(player,{ x:size, y:H/2 });
-    Body.setVelocity(player,{ x:0,y:0 });
-    Body.setPosition(other,{ x:W-size, y:H/2 });
-    Body.setVelocity(other,{ x:0,y:0 });
-    bullets.forEach(b=> World.remove(world,b));
+    Body.setPosition(player,{x:size,y:WORLD_HEIGHT/2});
+    Body.setVelocity(player,{x:0,y:0});
+    Body.setPosition(other,{x:WORLD_WIDTH-size,y:WORLD_HEIGHT/2});
+    Body.setVelocity(other,{x:0,y:0});
+    bullets.forEach(b=>World.remove(world,b));
     bullets.length=0;
     endOv.style.display='none';
     send({ health:myHealth });
   };
 
-  // — Main Loop & Render — 
-  function update() {
-    Body.setVelocity(player, { x:leftStick.x*6, y:leftStick.y*6 });
-    cam.x = player.position.x; cam.y = player.position.y;
-    Engine.update(engine, 1000/60);
-    send({});  // broadcast positions & blocks each frame
+  function update(){
+    Body.setVelocity(player,{ x:leftStick.x*6, y:leftStick.y*6 });
+    cam.x=player.position.x; cam.y=player.position.y;
+    Engine.update(engine,1000/60);
+    send({});
     render();
     requestAnimationFrame(update);
   }
 
-  function render() {
-    ctx.clearRect(0,0,W,H);
+  function render(){
     applyCamera();
-    // blue border
-    ctx.strokeStyle='blue'; ctx.lineWidth=4;
-    ctx.strokeRect(0,0,W,H);
-    // blocks
+    // draw blocks
     blocks.forEach(b=>{
       ctx.save();
       ctx.translate(b.position.x, b.position.y);
@@ -384,8 +383,8 @@
       ctx.fillRect(-30,-30,60,60);
       ctx.restore();
     });
-    // players
-    [[player,'#4af'], [other,'#fa4']].forEach(([bod,col])=>{
+    // draw players
+    [[player,'#4af'],[other,'#fa4']].forEach(([bod,col])=>{
       ctx.save();
       ctx.translate(bod.position.x, bod.position.y);
       ctx.rotate(bod.angle);
@@ -393,17 +392,21 @@
       ctx.fillRect(-size/2,-size/2,size,size);
       ctx.restore();
     });
-    // bullets
+    // draw bullets
     bullets.forEach(b=>{
       ctx.beginPath();
       ctx.arc(b.position.x, b.position.y, 5, 0, 2*Math.PI);
       ctx.fillStyle='#fff'; ctx.fill();
     });
+    // draw blue world border
+    ctx.lineWidth=4/scale;
+    ctx.strokeStyle='blue';
+    ctx.strokeRect(0,0,WORLD_WIDTH, WORLD_HEIGHT);
   }
 
   update();
-  document.body.addEventListener('touchmove', e=>e.preventDefault(), { passive:false });
-  window.addEventListener('resize', ()=>{ W=window.innerWidth; H=window.innerHeight; canvas.width=W; canvas.height=H; });
+  // prevent page scroll on touch
+  document.body.addEventListener('touchmove',e=>e.preventDefault(),{ passive:false });
   </script>
 </body>
 </html>
