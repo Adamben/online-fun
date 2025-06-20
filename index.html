@@ -70,7 +70,7 @@
   <!-- HUD -->
   <div id="ui">
     <div>You: <progress id="myHealth" max="5" value="5"></progress></div>
-    <div>Enemy: <progress id="otherHealth" max="5" value="5"></progress></div>
+    <!-- Opponent health bars will be added here dynamically -->
   </div>
 
   <!-- Inventory -->
@@ -88,8 +88,8 @@
 
   <script>
   // — Virtual World Constants —
-  const WORLD_WIDTH  = 2000;
-  const WORLD_HEIGHT = 1000;
+  const WORLD_WIDTH  = 2400;
+  const WORLD_HEIGHT = 2400;
 
   // — Canvas & Matter Setup —
   const canvas = document.getElementById('game');
@@ -141,22 +141,96 @@
   ];
   World.add(world, borders);
 
-  // — Player & Other Entities —
-  const size = 40;
-  const player = Bodies.rectangle(size, WORLD_HEIGHT/2, size, size, { restitution:0.2, frictionAir:0.1 });
-  const other  = Bodies.rectangle(WORLD_WIDTH-size, WORLD_HEIGHT/2, size, size, { restitution:0.2, frictionAir:0.1 });
-  World.add(world, [player, other]);
-
-  // — Interactive Blocks —
-  const blocks = [];
-  for(let i=0;i<5;i++){
-    const b = Bodies.rectangle(200 + i*300, 200, 60, 60, {
-      restitution:0.8, frictionAir:0.02, density:0.002
-    });
-    b._id = i;
-    blocks.push(b);
+  // — Map Data Parsing —
+  function parseMapData(mapString) {
+    const blocksData = [];
+    if (!mapString || typeof mapString !== 'string') {
+      return blocksData; // Return empty if input is invalid
+    }
+    const blockTokens = mapString.split('-');
+    for (const token of blockTokens) {
+      let isInteractive = false;
+      let coordString = token;
+      if (token.startsWith('i')) {
+        isInteractive = true;
+        coordString = token.substring(1);
+      }
+      const parts = coordString.split(',');
+      if (parts.length === 2) {
+        const x = parseInt(parts[0], 10);
+        const y = parseInt(parts[1], 10);
+        if (!isNaN(x) && !isNaN(y)) {
+          blocksData.push({ x, y, isInteractive });
+        }
+      }
+    }
+    return blocksData;
   }
-  World.add(world, blocks);
+
+  // — Player & Other Entities —
+  const size = 40; // Player size
+  const spawnPoints = [
+    { x: 100, y: WORLD_HEIGHT / 2 },
+    { x: WORLD_WIDTH - 100, y: WORLD_HEIGHT / 2 },
+    { x: WORLD_WIDTH / 2, y: 100 },
+    { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT - 100 },
+    { x: 200, y: 200 },
+    { x: WORLD_WIDTH - 200, y: WORLD_HEIGHT - 200 }
+  ];
+  let localPlayerSpawnIndex = 0; // Local player always takes the first spawn point
+
+  const player = Bodies.rectangle(
+    spawnPoints[localPlayerSpawnIndex].x,
+    spawnPoints[localPlayerSpawnIndex].y,
+    size, size, { restitution:0.2, frictionAir:0.1 }
+  );
+  World.add(world, player); // Add local player to world
+
+  // Initial camera position update was missing in the previous attempt; it's part of applyCamera or cam object init.
+  // Let's ensure cam is initialized correctly. The cam object is already global.
+  // We'll set its initial x,y after player is created.
+  cam.x = player.position.x;
+  cam.y = player.position.y;
+
+  let opponents = {}; // Stores opponent data, keyed by peerId
+  let peer; // Local PeerJS instance
+  let nextOpponentSpawnIndex = 1; // Index for the next opponent's spawn point (starts from 1 as player takes 0)
+
+
+  // — Blocks (from map string) —
+  const blocks = []; // Array to hold all blocks for rendering and networking
+  const mapString = "5,5-10,10-i15,15-20,20-i25,25-5,15-15,5"; // Example: grid coords
+  const gridCellSize = 50; // Each grid cell is 50x50 pixels
+  const blockSize = 50; // Visual size of the block
+
+  const parsedBlocks = parseMapData(mapString);
+
+  parsedBlocks.forEach((blockData, index) => {
+    const pixelX = blockData.x * gridCellSize + blockSize / 2; // Center block in grid cell
+    const pixelY = blockData.y * gridCellSize + blockSize / 2; // Center block in grid cell
+    let blockBody;
+
+    if (blockData.isInteractive) {
+      blockBody = Bodies.rectangle(pixelX, pixelY, blockSize, blockSize, {
+        restitution: 0.8,
+        frictionAir: 0.02,
+        density: 0.002,
+        _isInteractive: true, // Custom property for identification
+        render: { fillStyle: '#888' } // Default color, can be changed in render loop
+      });
+    } else {
+      blockBody = Bodies.rectangle(pixelX, pixelY, blockSize, blockSize, {
+        isStatic: true,
+        _isInteractive: false, // Custom property for identification
+        render: { fillStyle: '#555' } // Default color for static, can be changed
+      });
+    }
+
+    blockBody._id = "map_block_" + index; // Unique ID
+    blocks.push(blockBody);
+  });
+
+  World.add(world, blocks); // Add all new blocks to the world
 
   // — Bullets & IDs & Lifespan —
   const bullets = [];
@@ -253,87 +327,361 @@
   }
 
   // — Networking (PeerJS) —
-  let peer, conn;
-  function send(data){
-    if(conn&&conn.open){
-      conn.send(Object.assign({
-        pos:[player.position.x,player.position.y],
-        angle:player.angle,
-        blocks:blocks.map(b=>({ id:b._id, x:b.position.x, y:b.position.y, angle:b.angle }))
-      },data));
-    }
+  // let conn; // Replaced by opponent.conn
+
+  function send(customData = {}){ // customData can be e.g. {shoot: true, bullet: {...}}
+    if (!peer || !peer.id) return; // Ensure peer is initialized
+    const payload = Object.assign({
+      senderId: peer.id,
+      pos: [player.position.x, player.position.y],
+      angle: player.angle,
+      // blocks: blocks.map(b=>({ id:b._id, x:b.position.x, y:b.position.y, angle:b.angle })), // Keep if needed, optimize later
+      // health: myHealth // Health is often sent specifically on change
+    }, customData);
+
+    Object.values(opponents).forEach(op => {
+      if (op.conn && op.conn.open) {
+        op.conn.send(payload);
+      }
+    });
   }
-  function handleData(d){
-    if(d.pos) Body.setPosition(other,{ x:d.pos[0], y:d.pos[1] });
-    if(d.angle!=null) Body.setAngle(other,d.angle);
-    if(d.health!=null){
-      otherHealth=d.health;
-      document.getElementById('otherHealth').value=otherHealth;
+
+  function handleData(data, senderId){
+    if (!senderId || !opponents[senderId]) {
+      console.warn("Received data for unknown or disconnected opponent:", senderId, data);
+      return;
     }
-    if(d.shoot && d.bullet) spawnRemoteBullet(d.bullet);
-    if(d.blocks){
-      d.blocks.forEach(bd=>{
+    const opponent = opponents[senderId];
+
+    if(data.pos) Body.setPosition(opponent.body, { x:data.pos[0], y:data.pos[1] });
+    if(data.angle != null) Body.setAngle(opponent.body, data.angle);
+
+    if (data.healthUpdate) { // Received a health update from a player
+      const targetPlayerId = data.healthUpdate.targetId;
+      const newHealth = data.healthUpdate.newHealth;
+      if (targetPlayerId === peer.id) { // This should not happen if sent by self
+        // myHealth = newHealth;
+        // document.getElementById('myHealth').value = myHealth;
+      } else if (opponents[targetPlayerId]) {
+        opponents[targetPlayerId].health = newHealth;
+        const healthBar = document.getElementById(`health-${targetPlayerId}`);
+        if (healthBar) healthBar.value = newHealth;
+
+        if (newHealth <= 0 && data.healthUpdate.instigatorId === peer.id) {
+          if (!opponents[targetPlayerId].isDefeated) { // Check if already marked as defeated to prevent multiple kill counts
+             myKills++;
+             document.getElementById('myKills').textContent = myKills;
+             console.log(`I defeated ${targetPlayerId}! Total kills: ${myKills}`);
+             opponents[targetPlayerId].isDefeated = true; // Mark as defeated
+          }
+        }
+      }
+    }
+
+    if (data.damageEvent) { // Received a damage event
+      const victimId = data.damageEvent.victimId;
+      const instigatorId = data.damageEvent.instigatorId;
+      // const damageAmount = data.damageEvent.damageAmount; // Assuming 1 damage per hit for now
+
+      if (victimId === peer.id) { // Local player is the victim
+        damagePlayer(instigatorId);
+      }
+      // Opponent processes their own damage.
+    }
+
+    if(data.rematchSignal && senderId !== peer.id) { // Received rematch signal from an opponent
+      console.log(`Received rematch signal from ${senderId}. Resetting game state.`);
+      // Reset local player state to their initial spawn point
+      myHealth = 5;
+      document.getElementById('myHealth').value = myHealth;
+      // Kills typically persist through rematches in a session, or reset if game rules dictate
+      // document.getElementById('myKills').textContent = '0'; // Uncomment if kills should reset
+      Body.setPosition(player, { x: spawnPoints[localPlayerSpawnIndex].x, y: spawnPoints[localPlayerSpawnIndex].y });
+      Body.setVelocity(player,{x:0,y:0});
+      cam.x = player.position.x; cam.y = player.position.y; // Recenter camera
+
+      // Reset the signaling opponent's visual state to their spawn point
+      const opponent = opponents[senderId];
+      if (opponent) {
+        opponent.health = 5;
+        opponent.isDefeated = false;
+        const healthBar = document.getElementById(`health-${senderId}`);
+        if (healthBar) healthBar.value = 5;
+        if (opponent.body && opponent.spawnPoint) {
+            Body.setPosition(opponent.body, {x: opponent.spawnPoint.x, y: opponent.spawnPoint.y});
+            Body.setVelocity(opponent.body, {x: 0, y: 0});
+        } else if (opponent.body) { // Fallback if spawnPoint somehow wasn't stored
+             Body.setPosition(opponent.body, {x: spawnPoints[1].x, y: spawnPoints[1].y}); // Default to a known fallback
+             Body.setVelocity(opponent.body, {x: 0, y: 0});
+        }
+      }
+      // Note: All players receive the signal and reset themselves.
+      // The positions of other non-signaling opponents will be updated via their regular position sync.
+
+      bullets.forEach(b=>World.remove(world,b)); // Clear all bullets
+      bullets.length=0;
+      endOv.style.display='none'; // Hide end overlay if it was shown
+    }
+
+    if(data.shoot && data.bullet) spawnRemoteBullet(data.bullet, data.senderId);
+
+    // Block updates (less likely to change per player, but structure is here)
+    if(data.blocks){
+      data.blocks.forEach(bd=>{
         const b=blocks.find(x=>x._id===bd.id);
         if(b){ Body.setPosition(b,{x:bd.x,y:bd.y}); Body.setAngle(b,bd.angle); }
       });
     }
   }
+
   document.getElementById('initPeer').onclick=()=>{
-    const id=document.getElementById('myId').value.trim();
-    if(!id) return alert('Enter your peer ID');
-    peer=new Peer(id);
-    peer.on('open',()=>document.getElementById('connStatus').textContent=`Ready: ${id}`);
-    peer.on('connection',c=>{ conn=c; setupConn(); });
+    const myIdInput = document.getElementById('myId');
+    const id = myIdInput.value.trim() || 'Player-' + Math.random().toString(36).substr(2, 4); // Generate random if empty
+    myIdInput.value = id; // Update input field with actual ID used
+
+    if (peer) peer.destroy(); // Clean up old peer object if any
+    peer = new Peer(id);
+
+    peer.on('open', openId => {
+      document.getElementById('connStatus').textContent = `Your ID: ${openId}`;
+      console.log('My peer ID is: ' + openId);
+    });
+
+    peer.on('connection', newConnection => {
+      console.log(`New connection from ${newConnection.peer}`);
+      setupOpponent(newConnection);
+    });
+
+    peer.on('error', err => {
+      console.error("PeerJS error:", err);
+      document.getElementById('connStatus').textContent = `Error: ${err.type || err.message}`;
+    });
   };
+
   document.getElementById('connectPeer').onclick=()=>{
-    if(!peer) return alert('Init first');
-    conn=peer.connect(document.getElementById('otherId').value.trim());
-    setupConn();
+    if (!peer) return alert('Please initialize your Peer ID first (click Init).');
+    const otherId = document.getElementById('otherId').value.trim();
+    if (!otherId) return alert('Please enter an opponent\'s Peer ID.');
+    if (opponents[otherId]) return alert('Already connected or connecting to this peer.');
+
+    console.log(`Attempting to connect to ${otherId}`);
+    const newConnection = peer.connect(otherId, { reliable: true });
+    setupOpponent(newConnection);
   };
-  function setupConn(){
-    conn.on('open',()=>{
-      document.getElementById('connStatus').textContent='Connected!';
+
+  function setupOpponent(conn) {
+    const opponentId = conn.peer;
+    if (opponents[opponentId] && opponents[opponentId].conn && opponents[opponentId].conn.open) {
+      console.log(`Already have an open connection with ${opponentId}`);
+      return;
+    }
+
+    console.log(`Setting up opponent: ${opponentId}`);
+    const opponentSpawnPoint = spawnPoints[nextOpponentSpawnIndex % spawnPoints.length];
+    // It's important that nextOpponentSpawnIndex is managed correctly,
+    // potentially globally or passed around if multiple peers can initiate connections.
+    // For now, this client will cycle its own index for opponents it sets up.
+    nextOpponentSpawnIndex++;
+
+    const newOpponentBody = Bodies.rectangle(
+        opponentSpawnPoint.x, opponentSpawnPoint.y,
+        size, size, { restitution: 0.2, frictionAir: 0.1 }
+    );
+    World.add(world, newOpponentBody);
+
+    opponents[opponentId] = {
+      body: newOpponentBody,
+      health: 5, // Initial health
+      conn: conn,
+      angle: 0,
+      spawnPoint: opponentSpawnPoint, // Store the spawn point
+      isDefeated: false // To track if kill has been counted for this opponent
+    };
+
+    // Add health bar for new opponent
+    const uiContainer = document.getElementById('ui');
+    const healthBarDiv = document.createElement('div');
+    healthBarDiv.id = `opponent-ui-${opponentId}`;
+    // Sanitize opponentId for display if necessary, though PeerJS IDs are generally safe.
+    const displayName = opponentId.length > 8 ? opponentId.substring(0, 8) + "..." : opponentId;
+    healthBarDiv.innerHTML = `Opponent ${displayName}: <progress id="health-${opponentId}" max="5" value="${opponents[opponentId].health}"></progress>`;
+    uiContainer.appendChild(healthBarDiv);
+
+    conn.on('open', () => {
+      document.getElementById('connStatus').textContent = `Connected to ${opponentId}!`;
+      console.log(`Connection to ${opponentId} opened.`);
+      // Optional: Send initial handshake data including current health
+      send({ greeting: "Hello from " + peer.id, healthUpdate: { targetId: peer.id, newHealth: myHealth } });
+
+      // Voice chat setup for this connection
       navigator.mediaDevices.getUserMedia({audio:true})
-        .then(stream=>{ const call=peer.call(conn.peer,stream); call.on('stream',playStream); })
-        .catch(console.error);
+        .then(stream => {
+          const call = peer.call(opponentId, stream);
+          if (call) call.on('stream', remoteStream => playStream(remoteStream, opponentId));
+        })
+        .catch(err => console.error("Failed to get media for call:", err));
     });
-    peer.on('call',c=>{
-      navigator.mediaDevices.getUserMedia({audio:true})
-        .then(stream=>{ c.answer(stream); c.on('stream',playStream); })
-        .catch(console.error);
+
+    conn.on('data', data => {
+      // console.log("Received data from", opponentId, ":", data); // For debugging
+      handleData(data, opponentId);
     });
-    conn.on('data',handleData);
+
+    conn.on('close', () => {
+      console.log(`Connection from ${opponentId} closed.`);
+      if (opponents[opponentId]) {
+        World.remove(world, opponents[opponentId].body);
+        // Remove audio element if one was created for this opponent
+        const audioEl = document.getElementById(`audio_${opponentId}`);
+        if (audioEl) audioEl.remove();
+        // Remove health bar
+        const healthBarEl = document.getElementById(`opponent-ui-${opponentId}`);
+        if (healthBarEl) healthBarEl.remove();
+      }
+      delete opponents[opponentId];
+      document.getElementById('connStatus').textContent = `Disconnected from ${opponentId}.`;
+    });
+
+    conn.on('error', err => {
+      console.error(`Connection error with ${opponentId}:`, err);
+      if (opponents[opponentId]) {
+         World.remove(world, opponents[opponentId].body);
+         const healthBarEl = document.getElementById(`opponent-ui-${opponentId}`);
+         if (healthBarEl) healthBarEl.remove();
+      }
+      delete opponents[opponentId];
+      document.getElementById('connStatus').textContent = `Error with ${opponentId}: ${err.message}`;
+    });
   }
-  function playStream(stream){
-    const a=document.createElement('audio');
-    a.srcObject=stream; a.autoplay=true;
+
+  // Handle incoming calls
+  if (peer) { // This check should be after peer initialization ideally, or ensure peer exists
+    peer.on('call', call => {
+      console.log(`Incoming call from ${call.peer}`);
+      navigator.mediaDevices.getUserMedia({audio:true})
+        .then(stream => {
+          call.answer(stream); // Answer the call with an A/V stream.
+          call.on('stream', remoteStream => playStream(remoteStream, call.peer));
+        })
+        .catch(err => console.error("Failed to get media for answering call:", err));
+    });
+  }
+
+
+  function playStream(stream, peerId){
+    const audioElId = `audio_${peerId}`;
+    if (document.getElementById(audioElId)) return; // Already playing stream for this peer
+
+    const a = document.createElement('audio');
+    a.id = audioElId;
+    a.srcObject = stream;
+    a.autoplay = true;
     document.body.appendChild(a);
+    console.log(`Playing audio from ${peerId}`);
   }
 
   // — Health & Kills —
-  let myHealth=5, otherHealth=5, myKills=0;
-  function damagePlayer(){
-    if(--myHealth<0) myHealth=0;
-    document.getElementById('myHealth').value=myHealth;
-    cam.shake=20; navigator.vibrate?.(100);
-    send({ health:myHealth });
-    if(myHealth===0) showEnd('You Died');
+  let myHealth = 5;
+  let myKills = 0;
+
+  function damagePlayer(instigatorId = null){ // instigatorId is the peerId of the shooter
+    if (myHealth <= 0) return; // Already defeated
+
+    myHealth--;
+    document.getElementById('myHealth').value = myHealth;
+    cam.shake = 20; navigator.vibrate?.(100);
+
+    // Inform others about my new health
+    send({ healthUpdate: { targetId: peer.id, newHealth: myHealth, instigatorId: instigatorId } });
+
+    if(myHealth <= 0) {
+      showEnd('You Died');
+      // The instigator (if any) will see the healthUpdate and increment their kill count.
+    }
   }
-  function damageOther(){
-    if(--otherHealth<0) otherHealth=0;
-    document.getElementById('otherHealth').value=otherHealth;
-    if(otherHealth===0) showEnd('You Win');
-  }
+
+  // In handleData, when receiving healthUpdate for an opponent:
+  // if (data.healthUpdate && data.healthUpdate.newHealth <= 0) {
+  //   const victimId = data.healthUpdate.targetId;
+  //   const killerId = data.healthUpdate.instigatorId;
+  //   if (killerId === peer.id && opponents[victimId]) { // I was the instigator
+  //       myKills++;
+  //       document.getElementById('myKills').textContent = myKills;
+  //       console.log(`I defeated ${victimId}! Total kills: ${myKills}`);
+  //   }
+  // }
+  // This logic is now integrated into the healthUpdate part of handleData.
+
   Events.on(engine,'collisionStart',ev=>{
     ev.pairs.forEach(p=>{
-      const [A,B]=[p.bodyA,p.bodyB];
-      if(bullets.includes(A)&&B===other){ removeBullet(A._id); damageOther(); myKills++; }
-      if(bullets.includes(B)&&A===other){ removeBullet(B._id); damageOther(); myKills++; }
-      if(bullets.includes(A)&&B===player){ removeBullet(A._id); damagePlayer(); }
-      if(bullets.includes(B)&&A===player){ removeBullet(B._id); damagePlayer(); }
+      const [A,B] = [p.bodyA, p.bodyB];
+      // Local player hit by a bullet. The bullet itself doesn't know its instigator here.
+      // The instigator info will come from the shooter's `shoot` message if we add it there.
+      // For now, local damage doesn't record instigator directly, relies on network message.
+      if(bullets.includes(A) && B === player){ removeBullet(A._id); damagePlayer(A.shooterId || null); } // Assume bullet carries shooterId
+      if(bullets.includes(B) && A === player){ removeBullet(B._id); damagePlayer(B.shooterId || null); } // Assume bullet carries shooterId
+
+      // Opponent hit by a bullet (sent by local player)
+      Object.values(opponents).forEach(op => {
+        if (op && op.body) {
+          let bulletHit = null;
+          if (bullets.includes(A) && B === op.body) bulletHit = A;
+          if (bullets.includes(B) && A === op.body) bulletHit = B;
+
+          if (bulletHit) {
+            removeBullet(bulletHit._id);
+            // Send a damage event. The recipient (victim) will process it, update their health,
+            // and then broadcast their new health. The instigator will get a kill if health reaches 0.
+            console.log(`Local player's bullet hit opponent ${op.conn.peer}. Sending damage event.`);
+            send({ damageEvent: { victimId: op.conn.peer, instigatorId: peer.id, damageAmount: 1, bulletId: bulletHit._id } });
+          }
+        }
+      });
     });
-    document.getElementById('myKills').textContent=myKills;
+    document.getElementById('myKills').textContent = myKills;
   });
+
+  // In spawnRemoteBullet, tag bullet with shooterId
+  function spawnRemoteBullet(bd, shooterId){ // shooterId is the sender of the shoot message
+    if(bullets.some(b=>b._id===bd.id)) return;
+    const bullet = Bodies.circle(bd.x, bd.y, 5, { restitution:0.8, frictionAir:0.02, density:0.001 });
+    bullet._id = bd.id;
+    bullet.shooterId = shooterId; // Tag the bullet with the ID of the player who shot it
+    Body.setVelocity(bullet, { x:bd.vx, y:bd.vy });
+    bullets.push(bullet);
+    World.add(world, bullet);
+    setTimeout(()=>removeBullet(bd.id), 3500);
+  }
+
+  // Modify shoot function to include shooterId (local player's ID) in bullet data for network transmission
+  function shoot(isLocal){
+    const angle = Math.atan2(lastRight.y, lastRight.x);
+    const bid   = peer.id + "_" + bulletCounter++; // Ensure unique bullet ID across network
+    const bx = player.position.x + Math.cos(angle)*(size/2+5);
+    const by = player.position.y + Math.sin(angle)*(size/2+5);
+    const bullet = Bodies.circle(bx, by, 5, { restitution:0.8, frictionAir:0.02, density:0.001 });
+    bullet._id = bid;
+    bullet.shooterId = peer.id; // Tagging local bullets too for consistency if needed
+    Body.setVelocity(bullet, { x:Math.cos(angle)*15, y:Math.sin(angle)*15 });
+    bullets.push(bullet);
+    World.add(world, bullet);
+    setTimeout(()=>removeBullet(bid), 3500);
+    if(isLocal) send({ shoot:true, bullet:{ id:bid, x:bx, y:by, vx:bullet.velocity.x, vy:bullet.velocity.y, shooterId: peer.id }});
+    playBeep(600,0.05);
+    navigator.vibrate?.(20);
+  }
+
+  // Modify handleData for 'shoot' event to pass shooterId to spawnRemoteBullet
+  // In handleData:
+  // if(data.shoot && data.bullet) spawnRemoteBullet(data.bullet, data.senderId);
+  // This is already implicitly handled if spawnRemoteBullet takes senderId. Let's make it explicit.
+  // The 'data.senderId' is the peer who sent the message (the shooter).
+  // The 'data.bullet.shooterId' is who the sender claims shot the bullet (should be themselves).
+  // Sticking to data.senderId as the shooter of the bullet for remote bullets.
+
+  // Refined section in handleData:
+  // if(data.shoot && data.bullet) spawnRemoteBullet(data.bullet, data.senderId);
+
 
   // — Inventory Toggle —
   document.getElementById('inventory').onclick=()=>{
@@ -344,20 +692,33 @@
   // — Start / End UI & Loop —
   document.getElementById('startGame').onclick=()=>{
     document.getElementById('startOverlay').style.display='none';
-    send({});
+    // send({}); // Initial send might not be needed if using greeting or relying on first update
   };
   const endOv=document.getElementById('endOverlay'), endMsg=document.getElementById('endMsg');
   function showEnd(msg){ endMsg.textContent=msg; endOv.style.display='flex'; }
+
   document.getElementById('rematch').onclick=()=>{
-    myHealth=otherHealth=5; myKills=0;
-    document.getElementById('myHealth').value=5;
-    document.getElementById('otherHealth').value=5;
-    document.getElementById('myKills').textContent='0';
+    myHealth = 5; myKills = 0; // Reset local player
+    document.getElementById('myHealth').value = myHealth;
+    document.getElementById('myKills').textContent = '0';
     Body.setPosition(player,{x:size,y:WORLD_HEIGHT/2});
     Body.setVelocity(player,{x:0,y:0});
-    Body.setPosition(other,{x:WORLD_WIDTH-size,y:WORLD_HEIGHT/2});
-    Body.setVelocity(other,{x:0,y:0});
-    bullets.forEach(b=>World.remove(world,b));
+
+    // For opponents, their health reset will be communicated via network messages.
+    // Or, a specific "rematch" signal could be sent.
+    Object.values(opponents).forEach(op => {
+      if (op && op.body) { // Check if opponent and its body exist
+        Body.setPosition(op.body, {x: WORLD_WIDTH - size, y: WORLD_HEIGHT / 2}); // Reset position visually
+        Body.setVelocity(op.body, {x: 0, y: 0});
+        const healthBar = document.getElementById(`health-${op.conn.peer}`);
+        if (healthBar) healthBar.value = 5;
+        op.health = 5;
+        op.isDefeated = false; // Reset defeated state
+      }
+    });
+    send({ rematchSignal: true }); // Inform others about the rematch
+
+    bullets.forEach(b=>World.remove(world,b)); // Clear local bullets
     bullets.length=0;
     endOv.style.display='none';
     send({ health:myHealth });
@@ -379,18 +740,37 @@
       ctx.save();
       ctx.translate(b.position.x, b.position.y);
       ctx.rotate(b.angle);
-      ctx.fillStyle='#888';
-      ctx.fillRect(-30,-30,60,60);
+      // Differentiate color based on custom property or actual static status
+      if (b._isInteractive) {
+        ctx.fillStyle = '#888'; // Interactive blocks
+      } else if (b.isStatic) {
+        ctx.fillStyle = '#555'; // Static blocks
+      } else {
+        ctx.fillStyle = '#AAA'; // Default, if any other type
+      }
+      const renderSize = b.isStatic ? blockSize : (b.render.sprite && b.render.sprite.xScale ? blockSize * b.render.sprite.xScale : blockSize); // Use blockSize, assuming 60x60 was from old code
+      ctx.fillRect(-renderSize/2, -renderSize/2, renderSize, renderSize);
       ctx.restore();
     });
     // draw players
-    [[player,'#4af'],[other,'#fa4']].forEach(([bod,col])=>{
-      ctx.save();
-      ctx.translate(bod.position.x, bod.position.y);
-      ctx.rotate(bod.angle);
-      ctx.fillStyle=col;
-      ctx.fillRect(-size/2,-size/2,size,size);
-      ctx.restore();
+    // Draw local player
+    ctx.save();
+    ctx.translate(player.position.x, player.position.y);
+    ctx.rotate(player.angle);
+    ctx.fillStyle = '#4af'; // Local player color
+    ctx.fillRect(-size/2, -size/2, size, size);
+    ctx.restore();
+
+    // Draw opponents
+    Object.values(opponents).forEach(op => {
+      if (op && op.body) { // Check if opponent and its body exist
+        ctx.save();
+        ctx.translate(op.body.position.x, op.body.position.y);
+        ctx.rotate(op.body.angle); // Use op.body.angle if available, or op.angle if synced separately
+        ctx.fillStyle = '#fa4'; // Opponent color
+        ctx.fillRect(-size/2, -size/2, size, size);
+        ctx.restore();
+      }
     });
     // draw bullets
     bullets.forEach(b=>{
