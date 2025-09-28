@@ -71,6 +71,21 @@
   <div id="ui">
     <div>You: <progress id="myHealth" max="5" value="5"></progress></div>
     <div>Enemy: <progress id="otherHealth" max="5" value="5"></progress></div>
+    <button id="videoChatBtn" style="display:none; margin-top:10px; padding:5px 10px; background:#4CAF50; color:white; border:none; border-radius:4px; cursor:pointer;">
+      Start Video Chat
+    </button>
+  </div>
+  
+  <!-- Video Chat Container -->
+  <div id="videoContainer" style="display:none; position:fixed; bottom:20px; right:20px; width:300px; background:rgba(0,0,0,0.7); z-index:100; border:2px solid #4CAF50; border-radius:8px; padding:10px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <div style="color:white; font-weight:bold;">Video Chat</div>
+      <button id="endVideoChat" style="background:red; color:white; border:none; border-radius:4px; padding:2px 8px; cursor:pointer;">X</button>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      <video id="localVideo" autoplay muted playsinline style="width:100%; background:#000; border-radius:4px;"></video>
+      <video id="remoteVideo" autoplay playsinline style="width:100%; background:#000; border-radius:4px;"></video>
+    </div>
   </div>
 
   <!-- Inventory -->
@@ -253,7 +268,7 @@
   }
 
   // — Networking (PeerJS) —
-  let peer, conn;
+  let peer, conn, localStream, remoteStream, call, isVideoChatActive = false;
   function send(data){
     if(conn&&conn.open){
       conn.send(Object.assign({
@@ -277,6 +292,22 @@
         if(b){ Body.setPosition(b,{x:bd.x,y:bd.y}); Body.setAngle(b,bd.angle); }
       });
     }
+    if (d.type === 'move') {
+      // Handle movement data
+      if (other) Body.setPosition(other, d.pos);
+    } else if (d.type === 'shoot') {
+      // Handle shooting
+      spawnRemoteBullet(d.bullet);
+    } else if (d.type === 'damage') {
+      // Handle damage
+      damagePlayer();
+    } else if (d.type === 'videoStart' && !isVideoChatActive) {
+      // Start video chat when receiving start signal
+      startVideoChat();
+    } else if (d.type === 'videoEnd' && isVideoChatActive) {
+      // End video chat when receiving end signal
+      endVideoChat();
+    }
   }
   document.getElementById('initPeer').onclick=()=>{
     const id=document.getElementById('myId').value.trim();
@@ -293,6 +324,9 @@
   function setupConn(){
     conn.on('open',()=>{
       document.getElementById('connStatus').textContent='Connected!';
+      document.getElementById('startGame').disabled = false;
+      document.getElementById('connectPeer').disabled = true;
+      document.getElementById('videoChatBtn').style.display = 'block';
       navigator.mediaDevices.getUserMedia({audio:true})
         .then(stream=>{ const call=peer.call(conn.peer,stream); call.on('stream',playStream); })
         .catch(console.error);
@@ -309,6 +343,93 @@
     a.srcObject=stream; a.autoplay=true;
     document.body.appendChild(a);
   }
+
+  // — Video Chat —
+  const videoChatBtn = document.getElementById('videoChatBtn');
+  const videoContainer = document.getElementById('videoContainer');
+  const localVideo = document.getElementById('localVideo');
+  const remoteVideo = document.getElementById('remoteVideo');
+  const endVideoChatBtn = document.getElementById('endVideoChat');
+
+  async function startVideoChat() {
+    try {
+      // Get local media stream
+      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localVideo.srcObject = localStream;
+      
+      // Show video container
+      videoContainer.style.display = 'block';
+      videoChatBtn.textContent = 'Video Chat Active';
+      videoChatBtn.style.background = '#f44336';
+      isVideoChatActive = true;
+      
+      // Start call if we're the initiator
+      if (conn && conn.peerConnection) {
+        call = peer.call(conn.peer, localStream);
+        call.on('stream', stream => {
+          remoteVideo.srcObject = stream;
+          remoteStream = stream;
+        });
+      }
+      
+      // Listen for incoming call
+      peer.on('call', incomingCall => {
+        call = incomingCall;
+        call.answer(localStream);
+        call.on('stream', stream => {
+          remoteVideo.srcObject = stream;
+          remoteStream = stream;
+        });
+      });
+      
+      // Notify peer to start their video
+      send({ type: 'videoStart' });
+      
+    } catch (err) {
+      console.error('Error accessing media devices:', err);
+      alert('Could not access camera/microphone. Please check permissions.');
+    }
+  }
+  
+  function endVideoChat() {
+    // Stop all tracks
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      localVideo.srcObject = null;
+    }
+    if (remoteStream) {
+      remoteStream.getTracks().forEach(track => track.stop());
+      remoteVideo.srcObject = null;
+    }
+    
+    // Reset UI
+    videoContainer.style.display = 'none';
+    videoChatBtn.textContent = 'Start Video Chat';
+    videoChatBtn.style.background = '#4CAF50';
+    isVideoChatActive = false;
+    
+    // Notify peer to end video
+    if (conn && conn.open) {
+      send({ type: 'videoEnd' });
+    }
+    
+    // Close call if active
+    if (call) {
+      call.close();
+      call = null;
+    }
+  }
+  
+  // Event listeners
+  videoChatBtn.addEventListener('click', () => {
+    if (!isVideoChatActive) {
+      startVideoChat();
+    } else {
+      endVideoChat();
+    }
+  });
+  
+  endVideoChatBtn.addEventListener('click', endVideoChat);
 
   // — Health & Kills —
   let myHealth=5, otherHealth=5, myKills=0;
